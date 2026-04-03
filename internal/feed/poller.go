@@ -9,16 +9,18 @@ import (
 )
 
 // Poller periodically re-fetches all feeds whose refresh interval has elapsed,
-// upserting any new episodes it finds.
+// upserting any new episodes it finds. If auto_prefetch is enabled on a feed,
+// it also enqueues new episodes for background download via the Prefetcher.
 type Poller struct {
-	database *db.DB
-	fetcher  *Fetcher
-	stop     chan struct{}
-	wg       sync.WaitGroup
+	database   *db.DB
+	fetcher    *Fetcher
+	prefetcher *Prefetcher
+	stop       chan struct{}
+	wg         sync.WaitGroup
 }
 
-func NewPoller(database *db.DB, fetcher *Fetcher) *Poller {
-	return &Poller{database: database, fetcher: fetcher, stop: make(chan struct{})}
+func NewPoller(database *db.DB, fetcher *Fetcher, prefetcher *Prefetcher) *Poller {
+	return &Poller{database: database, fetcher: fetcher, prefetcher: prefetcher, stop: make(chan struct{})}
 }
 
 // Start launches the poll loop in the background. Call Stop to shut it down.
@@ -80,4 +82,8 @@ func (p *Poller) refreshFeed(f *db.Feed) {
 		log.Printf("poller: update fetched_at %s: %v", f.ID, err)
 	}
 	log.Printf("poller: refreshed %s (%d episodes)", f.ID, len(result.Episodes))
+
+	if f.AutoPrefetch && p.prefetcher != nil {
+		p.prefetcher.EnqueueFeedEpisodes(f.ID)
+	}
 }

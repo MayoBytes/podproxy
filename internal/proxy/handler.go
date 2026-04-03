@@ -7,7 +7,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -384,20 +383,9 @@ func (h *handler) episodeCachePath(ep *db.Episode) string {
 	if len(slug) > maxSlugLen {
 		slug = slug[:maxSlugLen]
 	}
-	ext := episodeFileExt(ep.OriginalURL)
+	ext := feed.EpisodeFileExt(ep.OriginalURL)
 	name := slug + "-" + ep.URLID + ext
 	return filepath.Join(h.cfg.Storage.CacheDir, "episodes", ep.FeedID, name)
-}
-
-// episodeFileExt extracts the file extension from a URL's path (e.g. ".mp3").
-// Returns an empty string if no extension is found or the URL is malformed.
-func episodeFileExt(rawURL string) string {
-	if u, err := url.Parse(rawURL); err == nil {
-		if ext := filepath.Ext(u.Path); ext != "" {
-			return ext
-		}
-	}
-	return ""
 }
 
 // tryFetchLock attempts to acquire the fetch lock for the given episode ID.

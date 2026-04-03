@@ -59,7 +59,7 @@ func newAPITestEnv(t *testing.T) *apiTestEnv {
 	}
 
 	mux := http.NewServeMux()
-	api.RegisterRoutes(mux, database, feed.NewFetcher(cfg), cfg)
+	api.RegisterRoutes(mux, database, feed.NewFetcher(cfg), nil, cfg)
 
 	return &apiTestEnv{db: database, mux: mux, cfg: cfg, rssSrv: rssSrv}
 }
@@ -265,5 +265,70 @@ func TestRefreshFeed_NotFound_Returns404(t *testing.T) {
 	w := env.do("POST", "/api/feeds/nonexistent/refresh", "")
 	if w.Code != http.StatusNotFound {
 		t.Errorf("want 404, got %d", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/feeds/{id}/prefetch
+// ---------------------------------------------------------------------------
+
+func TestPrefetchFeed_NotFound_Returns404(t *testing.T) {
+	env := newAPITestEnv(t)
+	w := env.do("POST", "/api/feeds/nonexistent/prefetch", "")
+	if w.Code != http.StatusNotFound {
+		t.Errorf("want 404, got %d", w.Code)
+	}
+}
+
+func TestPrefetchFeed_NilPrefetcher_Returns503(t *testing.T) {
+	env := newAPITestEnv(t) // prefetcher is nil in default env
+	env.do("POST", "/api/feeds", `{"url":"`+env.rssSrv.URL+`"}`)
+
+	w := env.do("POST", "/api/feeds/my-test-podcast/prefetch", "")
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("want 503, got %d", w.Code)
+	}
+}
+
+func TestPrefetchFeed_Returns202(t *testing.T) {
+	database, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+
+	rssSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/rss+xml")
+		w.Write([]byte(apiTestRSS))
+	}))
+	t.Cleanup(rssSrv.Close)
+
+	cfg := &config.Config{
+		Server:   config.ServerConfig{BaseURL: "http://proxy.local"},
+		Storage:  config.StorageConfig{CacheDir: t.TempDir()},
+		Defaults: config.DefaultsConfig{RefreshIntervalMinutes: 60, PrefetchConcurrency: 1},
+	}
+
+	prefetcher := feed.NewPrefetcher(database, cfg)
+	// Don't Start the prefetcher — we only need to verify the HTTP response.
+	t.Cleanup(prefetcher.Stop)
+
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux, database, feed.NewFetcher(cfg), prefetcher, cfg)
+
+	env := &apiTestEnv{db: database, mux: mux, cfg: cfg, rssSrv: rssSrv}
+	env.do("POST", "/api/feeds", `{"url":"`+rssSrv.URL+`"}`)
+
+	w := env.do("POST", "/api/feeds/my-test-podcast/prefetch", "")
+	if w.Code != http.StatusAccepted {
+		t.Errorf("want 202, got %d\nbody: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]string
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["id"] != "my-test-podcast" {
+		t.Errorf("id: want %q, got %q", "my-test-podcast", resp["id"])
+	}
+	if resp["status"] != "queued" {
+		t.Errorf("status: want %q, got %q", "queued", resp["status"])
 	}
 }

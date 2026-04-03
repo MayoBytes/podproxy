@@ -224,3 +224,29 @@ func TestFetch_UnreachableServer_ReturnsError(t *testing.T) {
 		t.Fatal("expected error for unreachable server, got nil")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// EpisodeFileExt
+// ---------------------------------------------------------------------------
+
+var episodeFileExtTests = []struct {
+	rawURL string
+	want   string
+}{
+	{"https://cdn.example.com/ep1.mp3", ".mp3"},
+	{"https://cdn.example.com/ep1.mp3?t=123&v=abc", ".mp3"},
+	{"https://cdn.example.com/ep1.M4A", ".M4A"},
+	{"https://cdn.example.com/episode", ""},
+	{"https://cdn.example.com/", ""},
+	{"not a url :// bad", ""},
+	{"", ""},
+}
+
+func TestEpisodeFileExt(t *testing.T) {
+	for _, tc := range episodeFileExtTests {
+		got := feed.EpisodeFileExt(tc.rawURL)
+		if got != tc.want {
+			t.Errorf("EpisodeFileExt(%q) = %q, want %q", tc.rawURL, got, tc.want)
+		}
+	}
+}

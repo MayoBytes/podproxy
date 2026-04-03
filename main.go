@@ -30,11 +30,14 @@ func main() {
 
 	fetcher := feed.NewFetcher(cfg)
 
-	poller := feed.NewPoller(database, fetcher)
+	prefetcher := feed.NewPrefetcher(database, cfg)
+	prefetcher.Start()
+
+	poller := feed.NewPoller(database, fetcher, prefetcher)
 	poller.Start()
 
 	mux := http.NewServeMux()
-	api.RegisterRoutes(mux, database, fetcher, cfg)
+	api.RegisterRoutes(mux, database, fetcher, prefetcher, cfg)
 	proxy.RegisterRoutes(mux, database, fetcher, cfg)
 
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
@@ -62,11 +65,15 @@ func main() {
 	<-quit
 
 	log.Println("shutting down...")
-	poller.Stop()
+	// Drain active HTTP connections before stopping background workers.
+	// Handlers may call prefetcher.Enqueue; stopping the prefetcher first
+	// (which closes its queue channel) would cause a panic on those sends.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Printf("shutdown: %v", err)
 	}
+	poller.Stop()
+	prefetcher.Stop()
 	log.Println("stopped")
 }

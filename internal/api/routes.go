@@ -15,18 +15,20 @@ import (
 )
 
 type handler struct {
-	db      *db.DB
-	fetcher *feed.Fetcher
-	cfg     *config.Config
+	db         *db.DB
+	fetcher    *feed.Fetcher
+	prefetcher *feed.Prefetcher
+	cfg        *config.Config
 }
 
-func RegisterRoutes(mux *http.ServeMux, database *db.DB, fetcher *feed.Fetcher, cfg *config.Config) {
-	h := &handler{db: database, fetcher: fetcher, cfg: cfg}
+func RegisterRoutes(mux *http.ServeMux, database *db.DB, fetcher *feed.Fetcher, prefetcher *feed.Prefetcher, cfg *config.Config) {
+	h := &handler{db: database, fetcher: fetcher, prefetcher: prefetcher, cfg: cfg}
 
 	mux.HandleFunc("POST /api/feeds", h.addFeed)
 	mux.HandleFunc("GET /api/feeds", h.listFeeds)
 	mux.HandleFunc("DELETE /api/feeds/{id}", h.deleteFeed)
 	mux.HandleFunc("POST /api/feeds/{id}/refresh", h.refreshFeed)
+	mux.HandleFunc("POST /api/feeds/{id}/prefetch", h.prefetchFeed)
 }
 
 // addFeed handles POST /api/feeds
@@ -184,6 +186,28 @@ func (h *handler) refreshFeed(w http.ResponseWriter, r *http.Request) {
 		"id":            id,
 		"episodes_seen": len(result.Episodes),
 	})
+}
+
+// prefetchFeed handles POST /api/feeds/{id}/prefetch
+// Enqueues all un-cached episodes within the prefetch_max_age_days window for
+// background download.
+func (h *handler) prefetchFeed(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	if _, err := h.db.GetFeed(id); errors.Is(err, db.ErrNotFound) {
+		http.Error(w, "feed not found", http.StatusNotFound)
+		return
+	} else if err != nil {
+		http.Error(w, "database error", http.StatusInternalServerError)
+		return
+	}
+
+	if h.prefetcher == nil {
+		http.Error(w, "prefetcher not available", http.StatusServiceUnavailable)
+		return
+	}
+	h.prefetcher.EnqueueFeedEpisodes(id)
+	writeJSON(w, http.StatusAccepted, map[string]string{"id": id, "status": "queued"})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

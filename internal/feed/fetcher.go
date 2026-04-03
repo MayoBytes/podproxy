@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -114,6 +116,17 @@ func itemToEpisode(feedID string, item *gofeed.Item) *db.Episode {
 func episodeURLID(guid string) string {
 	h := sha256.Sum256([]byte(guid))
 	return hex.EncodeToString(h[:8])
+}
+
+// EpisodeFileExt extracts the file extension from an episode URL's path (e.g. ".mp3").
+// Returns an empty string if no extension is found or the URL is malformed.
+func EpisodeFileExt(rawURL string) string {
+	if u, err := url.Parse(rawURL); err == nil {
+		if ext := filepath.Ext(u.Path); ext != "" {
+			return ext
+		}
+	}
+	return ""
 }
 
 // Slugify converts a feed title into a URL-safe identifier.

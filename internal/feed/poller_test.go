@@ -61,7 +61,7 @@ func TestPoller_RefreshStaleFeeds_FetchesNilLastFetched(t *testing.T) {
 		t.Fatalf("InsertFeed: %v", err)
 	}
 
-	p := NewPoller(d, newPollerTestFetcher())
+	p := NewPoller(d, newPollerTestFetcher(), nil)
 	p.refreshStaleFeeds()
 	p.wg.Wait()
 
@@ -108,7 +108,7 @@ func TestPoller_RefreshStaleFeeds_SkipsFreshFeed(t *testing.T) {
 		t.Fatalf("UpdateFeedFetchedAt: %v", err)
 	}
 
-	p := NewPoller(d, newPollerTestFetcher())
+	p := NewPoller(d, newPollerTestFetcher(), nil)
 	p.refreshStaleFeeds()
 	p.wg.Wait()
 
@@ -144,7 +144,7 @@ func TestPoller_RefreshStaleFeeds_FetchesExpiredFeed(t *testing.T) {
 		t.Fatalf("UpdateFeedFetchedAt: %v", err)
 	}
 
-	p := NewPoller(d, newPollerTestFetcher())
+	p := NewPoller(d, newPollerTestFetcher(), nil)
 	p.refreshStaleFeeds()
 	p.wg.Wait()
 
@@ -156,7 +156,51 @@ func TestPoller_RefreshStaleFeeds_FetchesExpiredFeed(t *testing.T) {
 // TestPoller_StartStop verifies that Start and Stop do not deadlock or panic.
 func TestPoller_StartStop(t *testing.T) {
 	d := newPollerTestDB(t)
-	p := NewPoller(d, newPollerTestFetcher())
+	p := NewPoller(d, newPollerTestFetcher(), nil)
 	p.Start()
 	p.Stop() // must return promptly
+}
+
+// TestPoller_AutoPrefetch_EnqueuesFeedAfterRefresh verifies that when a feed
+// has auto_prefetch=true the poller calls EnqueueFeedEpisodes after a
+// successful refresh, placing newly-seen episodes into the prefetcher queue.
+func TestPoller_AutoPrefetch_EnqueuesFeedAfterRefresh(t *testing.T) {
+	rssSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/rss+xml")
+		w.Write([]byte(pollerTestRSS))
+	}))
+	t.Cleanup(rssSrv.Close)
+
+	d := newPollerTestDB(t)
+	f := &db.Feed{
+		ID:                     "auto-pod",
+		Title:                  "Auto Pod",
+		OriginalURL:            rssSrv.URL,
+		RefreshIntervalMinutes: 60,
+		AutoPrefetch:           true,
+	}
+	if err := d.InsertFeed(f); err != nil {
+		t.Fatalf("InsertFeed: %v", err)
+	}
+
+	cfg := &config.Config{
+		Storage:  config.StorageConfig{CacheDir: t.TempDir()},
+		Defaults: config.DefaultsConfig{PrefetchConcurrency: 1},
+	}
+	prefetcher := NewPrefetcher(d, cfg)
+	// Do not Start the prefetcher — items remain in the queue channel.
+	t.Cleanup(prefetcher.Stop)
+
+	p := NewPoller(d, newPollerTestFetcher(), prefetcher)
+	p.refreshStaleFeeds()
+	p.wg.Wait()
+
+	select {
+	case ep := <-prefetcher.queue:
+		if ep.FeedID != "auto-pod" {
+			t.Errorf("enqueued episode feed_id: want %q, got %q", "auto-pod", ep.FeedID)
+		}
+	default:
+		t.Error("expected at least one episode in prefetcher queue after auto-prefetch refresh")
+	}
 }
