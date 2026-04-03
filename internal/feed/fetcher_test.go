@@ -72,7 +72,7 @@ func TestRewriteXML_ReplacesEnclosureURL(t *testing.T) {
 		"https://cdn.example.com/ep1.mp3": "deadbeef",
 	}
 	got := string(feed.RewriteXML(raw, "mypod", urlMap, "http://proxy.local:8080"))
-	if !strings.Contains(got, `url="http://proxy.local:8080/episodes/mypod/deadbeef"`) {
+	if !strings.Contains(got, `url="http://proxy.local:8080/episodes/mypod/deadbeef.mp3"`) {
 		t.Errorf("enclosure URL not rewritten; output:\n%s", got)
 	}
 	if strings.Contains(got, "cdn.example.com") {
@@ -86,7 +86,7 @@ func TestRewriteXML_ReplacesMediaContentURL(t *testing.T) {
 		"https://cdn.example.com/ep1.mp3": "abcd1234",
 	}
 	got := string(feed.RewriteXML(raw, "pod", urlMap, "http://proxy:8080"))
-	if !strings.Contains(got, `url="http://proxy:8080/episodes/pod/abcd1234"`) {
+	if !strings.Contains(got, `url="http://proxy:8080/episodes/pod/abcd1234.mp3"`) {
 		t.Errorf("media:content URL not rewritten; output:\n%s", got)
 	}
 }

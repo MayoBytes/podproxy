@@ -167,7 +167,8 @@ func RewriteXML(raw []byte, feedID string, urlMap map[string]string, baseURL str
 		}
 		origURL := string(sub[2])
 		if urlID, ok := urlMap[origURL]; ok {
-			newURL := fmt.Sprintf("%s/episodes/%s/%s", baseURL, feedID, urlID)
+			ext := EpisodeFileExt(origURL)
+			newURL := fmt.Sprintf("%s/episodes/%s/%s%s", baseURL, feedID, urlID, ext)
 			return []byte(string(sub[1]) + `url="` + newURL + `"`)
 		}
 		return match

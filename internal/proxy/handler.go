@@ -137,7 +137,7 @@ func (h *handler) serveFeed(w http.ResponseWriter, r *http.Request) {
 //   - Normal GET (uncached, lock acquired) → write-through: TeeReader to client + disk
 func (h *handler) serveEpisode(w http.ResponseWriter, r *http.Request) {
 	feedID := r.PathValue("feed_id")
-	epID := r.PathValue("ep_id")
+	epID := strings.TrimSuffix(r.PathValue("ep_id"), filepath.Ext(r.PathValue("ep_id")))
 
 	ep, err := h.db.GetEpisodeByURLID(feedID, epID)
 	if errors.Is(err, db.ErrNotFound) {
@@ -206,7 +206,7 @@ func (h *handler) serveCachedEpisode(w http.ResponseWriter, r *http.Request, ep 
 	if ep.PubDate != nil {
 		modTime = *ep.PubDate
 	}
-	http.ServeContent(w, r, "", modTime, f)
+	http.ServeContent(w, r, filepath.Base(ep.CachedPath), modTime, f)
 }
 
 // proxyDirect forwards the request (including any Range header) straight to the
