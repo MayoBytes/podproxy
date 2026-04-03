@@ -132,7 +132,7 @@ func TestUpdateEpisodeCacheStatus(t *testing.T) {
 	})
 
 	path := "/cache/pod/ep1.mp3"
-	if err := d.UpdateEpisodeCacheStatus("pod/ep1", "cached", &path, 98765); err != nil {
+	if err := d.UpdateEpisodeCacheStatus("pod/ep1", "cached", &path, 98765, "audio/mpeg"); err != nil {
 		t.Fatalf("UpdateEpisodeCacheStatus: %v", err)
 	}
 
@@ -146,6 +146,9 @@ func TestUpdateEpisodeCacheStatus(t *testing.T) {
 	if got.SizeBytes != 98765 {
 		t.Errorf("size_bytes: want 98765, got %d", got.SizeBytes)
 	}
+	if got.ContentType != "audio/mpeg" {
+		t.Errorf("content_type: want %q, got %q", "audio/mpeg", got.ContentType)
+	}
 }
 
 func TestUpdateEpisodeCacheStatus_ClearPath(t *testing.T) {
@@ -157,7 +160,7 @@ func TestUpdateEpisodeCacheStatus_ClearPath(t *testing.T) {
 		CacheStatus: "none", URLID: "uid1",
 	})
 	// Mark as failed with no path.
-	if err := d.UpdateEpisodeCacheStatus("pod/ep1", "failed", nil, 0); err != nil {
+	if err := d.UpdateEpisodeCacheStatus("pod/ep1", "failed", nil, 0, ""); err != nil {
 		t.Fatalf("UpdateEpisodeCacheStatus: %v", err)
 	}
 	got, _ := d.GetEpisodeByURLID("pod", "uid1")

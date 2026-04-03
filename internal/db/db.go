@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS episodes (
     duration_sec INT,
     size_bytes   INT,
     cache_status TEXT DEFAULT 'none',
+    content_type TEXT,
     url_id       TEXT NOT NULL,
     UNIQUE(feed_id, url_id)
 );

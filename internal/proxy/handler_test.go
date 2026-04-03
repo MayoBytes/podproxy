@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -310,5 +311,186 @@ func TestServeEpisode_UnknownEpisode_Returns404(t *testing.T) {
 	w := env.get("/episodes/pod5/doesnotexist", nil)
 	if w.Code != http.StatusNotFound {
 		t.Errorf("want 404, got %d", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2: write-through caching
+// ---------------------------------------------------------------------------
+
+func TestServeEpisode_WritesToCacheOnNormalGet(t *testing.T) {
+	const audioContent = "cached-audio-data-phase2"
+	originSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "audio/mpeg")
+		w.Write([]byte(audioContent))
+	}))
+	t.Cleanup(originSrv.Close)
+
+	env := newProxyTestEnv(t)
+	env.db.InsertFeed(&db.Feed{ID: "pod6", Title: "Pod6", OriginalURL: "https://x.com", RefreshIntervalMinutes: 60})
+	seedEpisode(t, env.db, "pod6", "writetest001", originSrv.URL+"/ep1.mp3")
+
+	w := env.get("/episodes/pod6/writetest001", nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: want 200, got %d\nbody: %s", w.Code, w.Body.String())
+	}
+	if w.Body.String() != audioContent {
+		t.Errorf("body: want %q, got %q", audioContent, w.Body.String())
+	}
+
+	// Verify the episode is now marked as cached in the DB.
+	ep, err := env.db.GetEpisodeByURLID("pod6", "writetest001")
+	if err != nil {
+		t.Fatalf("GetEpisodeByURLID: %v", err)
+	}
+	if ep.CacheStatus != "cached" {
+		t.Errorf("cache_status: want %q, got %q", "cached", ep.CacheStatus)
+	}
+	if ep.CachedPath == "" {
+		t.Error("cached_path should be set after write-through")
+	}
+
+	// Verify the file exists on disk.
+	if _, err := os.Stat(ep.CachedPath); os.IsNotExist(err) {
+		t.Errorf("cache file not found at %s", ep.CachedPath)
+	}
+}
+
+func TestServeEpisode_ServesCachedFile(t *testing.T) {
+	const cachedContent = "content-from-cache-not-origin"
+	originCallCount := 0
+	originSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		originCallCount++
+		w.Header().Set("Content-Type", "audio/mpeg")
+		w.Write([]byte("ORIGIN CONTENT — should not be served"))
+	}))
+	t.Cleanup(originSrv.Close)
+
+	env := newProxyTestEnv(t)
+	env.db.InsertFeed(&db.Feed{ID: "pod7", Title: "Pod7", OriginalURL: "https://x.com", RefreshIntervalMinutes: 60})
+	seedEpisode(t, env.db, "pod7", "cachedhit01", originSrv.URL+"/ep1.mp3")
+
+	// Write a sentinel file to the cache directory and mark the episode cached.
+	cacheDir := filepath.Join(env.cfg.Storage.CacheDir, "episodes", "pod7")
+	os.MkdirAll(cacheDir, 0755)
+	cachePath := filepath.Join(cacheDir, "test-episode-cachedhit01.mp3")
+	os.WriteFile(cachePath, []byte(cachedContent), 0644)
+
+	epID := "pod7/ep-cachedhit01"
+	if err := env.db.UpdateEpisodeCacheStatus(epID, "cached", &cachePath, int64(len(cachedContent)), "audio/mpeg"); err != nil {
+		t.Fatalf("UpdateEpisodeCacheStatus: %v", err)
+	}
+
+	w := env.get("/episodes/pod7/cachedhit01", nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: want 200, got %d\nbody: %s", w.Code, w.Body.String())
+	}
+	if w.Body.String() != cachedContent {
+		t.Errorf("body: want cached content, got %q", w.Body.String())
+	}
+	if originCallCount != 0 {
+		t.Errorf("origin should not be called for a cached episode; called %d time(s)", originCallCount)
+	}
+}
+
+func TestServeEpisode_CachedFile_ServesByRange(t *testing.T) {
+	const fullContent = "0123456789abcdef"
+
+	env := newProxyTestEnv(t)
+	env.db.InsertFeed(&db.Feed{ID: "pod8", Title: "Pod8", OriginalURL: "https://x.com", RefreshIntervalMinutes: 60})
+	seedEpisode(t, env.db, "pod8", "rangehit001", "http://unused.invalid/ep.mp3")
+
+	cacheDir := filepath.Join(env.cfg.Storage.CacheDir, "episodes", "pod8")
+	os.MkdirAll(cacheDir, 0755)
+	cachePath := filepath.Join(cacheDir, "test-episode-rangehit001.mp3")
+	os.WriteFile(cachePath, []byte(fullContent), 0644)
+
+	epID := "pod8/ep-rangehit001"
+	if err := env.db.UpdateEpisodeCacheStatus(epID, "cached", &cachePath, int64(len(fullContent)), "audio/mpeg"); err != nil {
+		t.Fatalf("UpdateEpisodeCacheStatus: %v", err)
+	}
+
+	w := env.get("/episodes/pod8/rangehit001", map[string]string{"Range": "bytes=0-3"})
+
+	if w.Code != http.StatusPartialContent {
+		t.Errorf("status: want 206, got %d", w.Code)
+	}
+	if w.Body.String() != "0123" {
+		t.Errorf("body: want %q, got %q", "0123", w.Body.String())
+	}
+}
+
+func TestServeEpisode_RangeRequest_TriggersBackgroundFetch(t *testing.T) {
+	const fullContent = "full-audio-content-abcdef"
+	originSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "audio/mpeg")
+		if r.Header.Get("Range") != "" {
+			w.Header().Set("Content-Range", "bytes 0-3/"+strconv.Itoa(len(fullContent)))
+			w.WriteHeader(http.StatusPartialContent)
+			w.Write([]byte(fullContent[:4]))
+		} else {
+			w.Write([]byte(fullContent))
+		}
+	}))
+	t.Cleanup(originSrv.Close)
+
+	env := newProxyTestEnv(t)
+	env.db.InsertFeed(&db.Feed{ID: "pod9", Title: "Pod9", OriginalURL: "https://x.com", RefreshIntervalMinutes: 60})
+	seedEpisode(t, env.db, "pod9", "bgfetch0001", originSrv.URL+"/ep1.mp3")
+
+	w := env.get("/episodes/pod9/bgfetch0001", map[string]string{"Range": "bytes=0-3"})
+
+	if w.Code != http.StatusPartialContent {
+		t.Errorf("status: want 206, got %d", w.Code)
+	}
+
+	// Poll for the background goroutine to finish caching the full episode.
+	deadline := time.Now().Add(5 * time.Second)
+	var ep *db.Episode
+	for time.Now().Before(deadline) {
+		ep, _ = env.db.GetEpisodeByURLID("pod9", "bgfetch0001")
+		if ep != nil && ep.CacheStatus == "cached" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if ep == nil || ep.CacheStatus != "cached" {
+		t.Errorf("background fetch did not cache episode within timeout; cache_status=%q", func() string {
+			if ep != nil {
+				return ep.CacheStatus
+			}
+			return "<nil>"
+		}())
+	}
+}
+
+func TestServeEpisode_CachedFileMissing_ResetsAndProxies(t *testing.T) {
+	const originContent = "proxied-after-cache-miss"
+	originSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "audio/mpeg")
+		w.Write([]byte(originContent))
+	}))
+	t.Cleanup(originSrv.Close)
+
+	env := newProxyTestEnv(t)
+	env.db.InsertFeed(&db.Feed{ID: "pod10", Title: "Pod10", OriginalURL: "https://x.com", RefreshIntervalMinutes: 60})
+	seedEpisode(t, env.db, "pod10", "staleache01", originSrv.URL+"/ep1.mp3")
+
+	// Mark episode as cached but point to a non-existent file.
+	nonExistentPath := filepath.Join(env.cfg.Storage.CacheDir, "episodes", "pod10", "gone.mp3")
+	epID := "pod10/ep-staleache01"
+	if err := env.db.UpdateEpisodeCacheStatus(epID, "cached", &nonExistentPath, 1000, "audio/mpeg"); err != nil {
+		t.Fatalf("UpdateEpisodeCacheStatus: %v", err)
+	}
+
+	w := env.get("/episodes/pod10/staleache01", nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: want 200, got %d\nbody: %s", w.Code, w.Body.String())
+	}
+	if w.Body.String() != originContent {
+		t.Errorf("body: want proxied content, got %q", w.Body.String())
 	}
 }

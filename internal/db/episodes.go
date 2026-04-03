@@ -17,6 +17,7 @@ type Episode struct {
 	DurationSec int
 	SizeBytes   int64
 	CacheStatus string
+	ContentType string
 	URLID       string
 }
 
@@ -37,14 +38,14 @@ func (db *DB) UpsertEpisode(e *Episode) error {
 
 func (db *DB) GetEpisodeByURLID(feedID, urlID string) (*Episode, error) {
 	row := db.QueryRow(`
-		SELECT id, feed_id, title, original_url, cached_path, pub_date, duration_sec, size_bytes, cache_status, url_id
+		SELECT id, feed_id, title, original_url, cached_path, pub_date, duration_sec, size_bytes, cache_status, content_type, url_id
 		FROM episodes WHERE feed_id = ? AND url_id = ?`, feedID, urlID)
 	return scanEpisode(row)
 }
 
 func (db *DB) ListEpisodesByFeed(feedID string) ([]*Episode, error) {
 	rows, err := db.Query(`
-		SELECT id, feed_id, title, original_url, cached_path, pub_date, duration_sec, size_bytes, cache_status, url_id
+		SELECT id, feed_id, title, original_url, cached_path, pub_date, duration_sec, size_bytes, cache_status, content_type, url_id
 		FROM episodes WHERE feed_id = ? ORDER BY pub_date DESC`, feedID)
 	if err != nil {
 		return nil, err
@@ -62,10 +63,10 @@ func (db *DB) ListEpisodesByFeed(feedID string) ([]*Episode, error) {
 	return eps, rows.Err()
 }
 
-func (db *DB) UpdateEpisodeCacheStatus(id, status string, cachedPath *string, sizeBytes int64) error {
+func (db *DB) UpdateEpisodeCacheStatus(id, status string, cachedPath *string, sizeBytes int64, contentType string) error {
 	_, err := db.Exec(`
-		UPDATE episodes SET cache_status = ?, cached_path = ?, size_bytes = ? WHERE id = ?`,
-		status, cachedPath, sizeBytes, id)
+		UPDATE episodes SET cache_status = ?, cached_path = ?, size_bytes = ?, content_type = ? WHERE id = ?`,
+		status, cachedPath, sizeBytes, contentType, id)
 	return err
 }
 
@@ -73,8 +74,9 @@ func scanEpisode(s scanner) (*Episode, error) {
 	var e Episode
 	var cachedPath sql.NullString
 	var pubDate sql.NullTime
+	var contentType sql.NullString
 	err := s.Scan(&e.ID, &e.FeedID, &e.Title, &e.OriginalURL, &cachedPath, &pubDate,
-		&e.DurationSec, &e.SizeBytes, &e.CacheStatus, &e.URLID)
+		&e.DurationSec, &e.SizeBytes, &e.CacheStatus, &contentType, &e.URLID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("episode %w", ErrNotFound)
 	}
@@ -86,6 +88,9 @@ func scanEpisode(s scanner) (*Episode, error) {
 	}
 	if pubDate.Valid {
 		e.PubDate = &pubDate.Time
+	}
+	if contentType.Valid {
+		e.ContentType = contentType.String
 	}
 	return &e, nil
 }
