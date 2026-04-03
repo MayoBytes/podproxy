@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 
 	"gopkg.in/yaml.v3"
 )
@@ -52,6 +53,7 @@ func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
+			applyEnvOverrides(cfg)
 			applyDerivedDefaults(cfg)
 			return cfg, nil
 		}
@@ -65,9 +67,22 @@ func Load(path string) (*Config, error) {
 	if cfg.Server.Port == 0 {
 		cfg.Server.Port = defaultPort
 	}
+	applyEnvOverrides(cfg)
 	applyDerivedDefaults(cfg)
 
 	return cfg, nil
+}
+
+// applyEnvOverrides overrides Port and BaseURL from environment variables if set.
+func applyEnvOverrides(cfg *Config) {
+	if v := os.Getenv("PODPROXY_PORT"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil {
+			cfg.Server.Port = p
+		}
+	}
+	if v := os.Getenv("PODPROXY_BASE_URL"); v != "" {
+		cfg.Server.BaseURL = v
+	}
 }
 
 // applyDerivedDefaults fills in values that depend on other config fields.

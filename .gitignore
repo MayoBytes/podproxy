@@ -39,3 +39,6 @@ cache/
 
 # Runtime config
 config.yaml
+
+# my dev/testing ground
+stage/

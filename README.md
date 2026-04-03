@@ -19,6 +19,12 @@ Open [http://localhost:8080/ui](http://localhost:8080/ui) to manage feeds.
 
 ## Docker Deployment
 
+The image is published to the GitHub Container Registry and pulled automatically by the compose file:
+
+```
+ghcr.io/mayobytes/podproxy:latest
+```
+
 ### 1. Create a config file
 
 ```bash
@@ -38,6 +44,12 @@ server:
 ```bash
 cd deploy
 docker compose up -d
+```
+
+To update to the latest image later:
+
+```bash
+docker compose pull && docker compose up -d
 ```
 
 Data and cache are stored in named Docker volumes (`podproxy-data`, `podproxy-cache`). To use host paths instead, replace the volume entries in `docker-compose.yml`:
@@ -62,7 +74,7 @@ volumes:
 ### TrueNAS SCALE
 
 1. Go to **Apps → Custom App → Launch Custom App**.
-2. Use the official Docker image (build and push it first), or install Docker Compose via the TrueNAS shell and run `docker compose up -d` from the project directory.
+2. Use `ghcr.io/mayobytes/podproxy:latest` as the image, or install Docker Compose via the TrueNAS shell and run `docker compose up -d` from the `deploy/` directory.
 3. Bind host paths under `/mnt` to `/app/data` and `/app/cache` in the compose file.
 
 ### Generic Docker host
@@ -70,7 +82,7 @@ volumes:
 Any machine with Docker installed:
 
 ```bash
-git clone <repo> podproxy && cd podproxy
+git clone https://github.com/MayoBytes/podproxy && cd podproxy
 cp deploy/config.yaml.example deploy/config.yaml
 # edit deploy/config.yaml
 cd deploy && docker compose up -d
@@ -109,13 +121,19 @@ GET    /health
 
 ## Configuration
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `server.port` | `8080` | HTTP listen port |
-| `server.base_url` | `http://localhost:8080` | Public URL (used in proxy URLs) |
-| `storage.cache_dir` | `./cache` | Episode audio cache directory |
-| `storage.data_dir` | `./data` | SQLite database directory |
-| `defaults.refresh_interval_minutes` | `60` | How often feeds are re-fetched |
-| `defaults.auto_prefetch` | `false` | Download new episodes automatically after each refresh |
-| `defaults.prefetch_max_age_days` | `30` | Skip prefetch for episodes older than this (0 = no limit) |
-| `defaults.prefetch_concurrency` | `2` | Simultaneous background download workers |
+| Key | Env var | Default | Description |
+|-----|---------|---------|-------------|
+| `server.port` | `PODPROXY_PORT` | `8080` | HTTP listen port |
+| `server.base_url` | `PODPROXY_BASE_URL` | `http://localhost:8080` | Public URL (used in proxy URLs) |
+| `storage.cache_dir` | — | `./cache` | Episode audio cache directory |
+| `storage.data_dir` | — | `./data` | SQLite database directory |
+| `defaults.refresh_interval_minutes` | — | `60` | How often feeds are re-fetched |
+| `defaults.auto_prefetch` | — | `false` | Download new episodes automatically after each refresh |
+| `defaults.prefetch_max_age_days` | — | `30` | Skip prefetch for episodes older than this (0 = no limit) |
+| `defaults.prefetch_concurrency` | — | `2` | Simultaneous background download workers |
+
+Environment variables take precedence over `config.yaml`. This is useful for Docker deployments where you want to set `base_url` without mounting a config file:
+
+```bash
+docker run -e PODPROXY_PORT=9090 -e PODPROXY_BASE_URL=http://192.168.1.100:9090 ...
+```

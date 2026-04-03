@@ -1,8 +1,6 @@
 services:
   podproxy:
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile
+    image: ghcr.io/mayobytes/podproxy:latest
     ports:
       - "8080:8080"
     volumes:
