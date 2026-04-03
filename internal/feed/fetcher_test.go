@@ -91,6 +91,17 @@ func TestRewriteXML_ReplacesMediaContentURL(t *testing.T) {
 	}
 }
 
+func TestRewriteXML_UsesTypeAttributeWhenURLHasNoExtension(t *testing.T) {
+	raw := []byte(`<rss><channel><item><enclosure url="https://cdn.example.com/episode/abc123" type="audio/mpeg" length="0"/></item></channel></rss>`)
+	urlMap := map[string]string{
+		"https://cdn.example.com/episode/abc123": "deadbeef",
+	}
+	got := string(feed.RewriteXML(raw, "mypod", urlMap, "http://proxy.local:8080"))
+	if !strings.Contains(got, `url="http://proxy.local:8080/episodes/mypod/deadbeef.mp3"`) {
+		t.Errorf("expected .mp3 from type attribute fallback; output:\n%s", got)
+	}
+}
+
 func TestRewriteXML_LeavesMissingURLsUnchanged(t *testing.T) {
 	raw := []byte(`<rss><channel><item><enclosure url="https://cdn.example.com/unknown.mp3" type="audio/mpeg" length="0"/></item></channel></rss>`)
 	urlMap := map[string]string{} // empty — no match

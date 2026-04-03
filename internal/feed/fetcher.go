@@ -154,24 +154,49 @@ func Slugify(s string) string {
 	return string(result)
 }
 
-// rewritePattern matches enclosure and media:content URLs in RSS XML.
-var rewritePattern = regexp.MustCompile(`(<(?:enclosure|media:content)[^>]*\s)url="([^"]*)"`)
+// rewritePattern matches the full enclosure or media:content tag.
+var rewritePattern = regexp.MustCompile(`<(?:enclosure|media:content)[^>]*/?>`)
+
+// urlAttrPattern extracts the url="..." attribute from a tag.
+var urlAttrPattern = regexp.MustCompile(`\burl="([^"]*)"`)
+
+// typeAttrPattern extracts the type="..." attribute from a tag.
+var typeAttrPattern = regexp.MustCompile(`\btype="([^"]*)"`)
+
+// mimeToExt maps common podcast MIME types to file extensions, used as a
+// fallback when the original enclosure URL has no extension in its path.
+var mimeToExt = map[string]string{
+	"audio/mpeg":  ".mp3",
+	"audio/mp4":   ".m4a",
+	"audio/x-m4a": ".m4a",
+	"audio/ogg":   ".ogg",
+	"audio/opus":  ".opus",
+	"audio/aac":   ".aac",
+	"audio/wav":   ".wav",
+	"audio/flac":  ".flac",
+	"video/mp4":   ".mp4",
+}
 
 // RewriteXML rewrites all enclosure/media:content URLs in raw RSS XML to point
 // to the proxy server, using the episode URL IDs from the DB.
 func RewriteXML(raw []byte, feedID string, urlMap map[string]string, baseURL string) []byte {
-	result := rewritePattern.ReplaceAllFunc(raw, func(match []byte) []byte {
-		sub := rewritePattern.FindSubmatch(match)
-		if sub == nil {
+	return rewritePattern.ReplaceAllFunc(raw, func(match []byte) []byte {
+		urlSub := urlAttrPattern.FindSubmatch(match)
+		if urlSub == nil {
 			return match
 		}
-		origURL := string(sub[2])
-		if urlID, ok := urlMap[origURL]; ok {
-			ext := EpisodeFileExt(origURL)
-			newURL := fmt.Sprintf("%s/episodes/%s/%s%s", baseURL, feedID, urlID, ext)
-			return []byte(string(sub[1]) + `url="` + newURL + `"`)
+		origURL := string(urlSub[1])
+		urlID, ok := urlMap[origURL]
+		if !ok {
+			return match
 		}
-		return match
+		ext := EpisodeFileExt(origURL)
+		if ext == "" {
+			if tm := typeAttrPattern.FindSubmatch(match); tm != nil {
+				ext = mimeToExt[string(tm[1])]
+			}
+		}
+		newURL := fmt.Sprintf("%s/episodes/%s/%s%s", baseURL, feedID, urlID, ext)
+		return urlAttrPattern.ReplaceAll(match, []byte(`url="`+newURL+`"`))
 	})
-	return result
 }
