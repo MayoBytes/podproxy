@@ -86,6 +86,51 @@ func (db *DB) DeleteFeed(id string) error {
 	return tx.Commit()
 }
 
+// FeedWithStats extends Feed with aggregated episode statistics.
+type FeedWithStats struct {
+	*Feed
+	EpisodeCount int
+	CachedCount  int
+	TotalBytes   int64
+}
+
+// ListFeedsWithStats returns all feeds ordered by title, each annotated with
+// episode counts and total cached bytes derived from the episodes table.
+func (db *DB) ListFeedsWithStats() ([]*FeedWithStats, error) {
+	rows, err := db.Query(`
+		SELECT f.id, f.title, f.original_url, f.last_fetched_at,
+		       f.refresh_interval_minutes, f.auto_prefetch,
+		       COUNT(e.id)                                                        AS episode_count,
+		       COALESCE(SUM(CASE WHEN e.cache_status='cached' THEN 1 ELSE 0 END),0) AS cached_count,
+		       COALESCE(SUM(CASE WHEN e.cache_status='cached' THEN e.size_bytes ELSE 0 END), 0) AS total_bytes
+		FROM feeds f
+		LEFT JOIN episodes e ON e.feed_id = f.id
+		GROUP BY f.id
+		ORDER BY f.title`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []*FeedWithStats
+	for rows.Next() {
+		var fws FeedWithStats
+		var f Feed
+		var lastFetched sql.NullTime
+		if err := rows.Scan(&f.ID, &f.Title, &f.OriginalURL, &lastFetched,
+			&f.RefreshIntervalMinutes, &f.AutoPrefetch,
+			&fws.EpisodeCount, &fws.CachedCount, &fws.TotalBytes); err != nil {
+			return nil, err
+		}
+		if lastFetched.Valid {
+			f.LastFetchedAt = &lastFetched.Time
+		}
+		fws.Feed = &f
+		result = append(result, &fws)
+	}
+	return result, rows.Err()
+}
+
 type scanner interface {
 	Scan(dest ...any) error
 }

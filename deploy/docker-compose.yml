@@ -1,0 +1,19 @@
+services:
+  podproxy:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      # Mount your config.yaml (copy from config.yaml.example and edit base_url)
+      - ./config.yaml:/app/config.yaml:ro
+      # Persistent storage for the SQLite database
+      - podproxy-data:/app/data
+      # Persistent storage for cached episode audio files
+      - podproxy-cache:/app/cache
+    restart: unless-stopped
+
+volumes:
+  podproxy-data:
+  podproxy-cache:

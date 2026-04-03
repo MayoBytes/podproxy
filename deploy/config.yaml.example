@@ -1,0 +1,26 @@
+server:
+  port: 8080
+  # Set this to the URL your podcast app will use to reach this server.
+  # For Docker: replace with your NAS / host IP or hostname.
+  base_url: "http://your-nas-ip:8080"
+
+storage:
+  # Paths are relative to the working directory (/app inside Docker).
+  # These default values match the docker-compose volume mounts.
+  cache_dir: ./cache
+  data_dir: ./data
+
+defaults:
+  # How often to re-fetch each feed's RSS (minutes).
+  refresh_interval_minutes: 60
+
+  # When true, new episodes are automatically queued for background download
+  # after each feed refresh.
+  auto_prefetch: false
+
+  # Only prefetch episodes published within this many days.
+  # Set to 0 for no age limit.
+  prefetch_max_age_days: 30
+
+  # Number of simultaneous background download workers.
+  prefetch_concurrency: 2

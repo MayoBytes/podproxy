@@ -151,3 +151,94 @@ func TestDeleteFeed_CascadesEpisodes(t *testing.T) {
 		t.Errorf("want 0 episodes after feed delete, got %d", len(eps))
 	}
 }
+
+// ---------------------------------------------------------------------------
+// ListFeedsWithStats
+// ---------------------------------------------------------------------------
+
+func TestListFeedsWithStats_Empty(t *testing.T) {
+	d := openTestDB(t)
+	feeds, err := d.ListFeedsWithStats()
+	if err != nil {
+		t.Fatalf("ListFeedsWithStats: %v", err)
+	}
+	if len(feeds) != 0 {
+		t.Errorf("want 0 feeds, got %d", len(feeds))
+	}
+}
+
+func TestListFeedsWithStats_NoEpisodes(t *testing.T) {
+	d := openTestDB(t)
+	d.InsertFeed(&Feed{ID: "pod", Title: "Pod", OriginalURL: "https://example.com"})
+
+	feeds, err := d.ListFeedsWithStats()
+	if err != nil {
+		t.Fatalf("ListFeedsWithStats: %v", err)
+	}
+	if len(feeds) != 1 {
+		t.Fatalf("want 1 feed, got %d", len(feeds))
+	}
+	if feeds[0].EpisodeCount != 0 {
+		t.Errorf("episode_count: want 0, got %d", feeds[0].EpisodeCount)
+	}
+	if feeds[0].CachedCount != 0 {
+		t.Errorf("cached_count: want 0, got %d", feeds[0].CachedCount)
+	}
+	if feeds[0].TotalBytes != 0 {
+		t.Errorf("total_bytes: want 0, got %d", feeds[0].TotalBytes)
+	}
+}
+
+func TestListFeedsWithStats_AggregatesCorrectly(t *testing.T) {
+	d := openTestDB(t)
+	d.InsertFeed(&Feed{ID: "pod", Title: "Pod", OriginalURL: "https://example.com"})
+
+	d.UpsertEpisode(&Episode{ID: "pod/ep1", FeedID: "pod", Title: "Ep1", OriginalURL: "https://cdn.example.com/ep1.mp3", CacheStatus: "none", URLID: "u001"})
+	d.UpsertEpisode(&Episode{ID: "pod/ep2", FeedID: "pod", Title: "Ep2", OriginalURL: "https://cdn.example.com/ep2.mp3", CacheStatus: "none", URLID: "u002"})
+	d.UpsertEpisode(&Episode{ID: "pod/ep3", FeedID: "pod", Title: "Ep3", OriginalURL: "https://cdn.example.com/ep3.mp3", CacheStatus: "none", URLID: "u003"})
+
+	p1 := "/cache/ep1.mp3"
+	d.UpdateEpisodeCacheStatus("pod/ep1", "cached", &p1, 1024, "audio/mpeg")
+	p2 := "/cache/ep2.mp3"
+	d.UpdateEpisodeCacheStatus("pod/ep2", "cached", &p2, 2048, "audio/mpeg")
+	// ep3 stays "none"
+
+	feeds, err := d.ListFeedsWithStats()
+	if err != nil {
+		t.Fatalf("ListFeedsWithStats: %v", err)
+	}
+	if len(feeds) != 1 {
+		t.Fatalf("want 1 feed, got %d", len(feeds))
+	}
+	f := feeds[0]
+	if f.EpisodeCount != 3 {
+		t.Errorf("episode_count: want 3, got %d", f.EpisodeCount)
+	}
+	if f.CachedCount != 2 {
+		t.Errorf("cached_count: want 2, got %d", f.CachedCount)
+	}
+	if f.TotalBytes != 3072 {
+		t.Errorf("total_bytes: want 3072, got %d", f.TotalBytes)
+	}
+}
+
+func TestListFeedsWithStats_OrderedByTitle(t *testing.T) {
+	d := openTestDB(t)
+	d.InsertFeed(&Feed{ID: "z-pod", Title: "Zeta", OriginalURL: "https://example.com/z"})
+	d.InsertFeed(&Feed{ID: "a-pod", Title: "Alpha", OriginalURL: "https://example.com/a"})
+	d.InsertFeed(&Feed{ID: "m-pod", Title: "Mango", OriginalURL: "https://example.com/m"})
+
+	feeds, err := d.ListFeedsWithStats()
+	if err != nil {
+		t.Fatalf("ListFeedsWithStats: %v", err)
+	}
+	if len(feeds) != 3 {
+		t.Fatalf("want 3 feeds, got %d", len(feeds))
+	}
+	want := []string{"Alpha", "Mango", "Zeta"}
+	for i, w := range want {
+		if feeds[i].Feed.Title != w {
+			t.Errorf("feeds[%d].Title: want %q, got %q", i, w, feeds[i].Feed.Title)
+		}
+	}
+}

@@ -1,0 +1,79 @@
+{{define "body"}}
+<h1>Feeds</h1>
+
+<div class="card" style="margin-bottom:1.25rem">
+  <div class="add-form">
+    <h2>Add Feed</h2>
+    <form hx-post="/ui/feeds/add"
+          hx-target="#feed-list"
+          hx-swap="outerHTML"
+          hx-indicator="#add-spinner">
+      <div class="form-row">
+        <input type="text" name="url" placeholder="https://feeds.example.com/podcast.rss" required autocomplete="off">
+        <button type="submit" class="btn btn-primary">Add</button>
+        <span id="add-spinner" class="htmx-indicator">Fetching...</span>
+      </div>
+    </form>
+  </div>
+</div>
+
+{{template "feed-list" .}}
+{{end}}
+
+{{define "feed-list"}}
+<div id="feed-list">
+  {{if .Message}}
+  <div class="alert {{if .IsError}}alert-err{{else}}alert-ok{{end}}">{{.Message}}</div>
+  {{end}}
+
+  <div class="card">
+    <table>
+      <thead>
+        <tr>
+          <th>Feed</th>
+          <th>Episodes</th>
+          <th>Cached</th>
+          <th>Size</th>
+          <th>Last Fetched</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{if .Feeds}}
+          {{range .Feeds}}
+          <tr>
+            <td>
+              <a class="feed-title" href="/ui/feeds/{{.Feed.ID}}/episodes">{{.Feed.Title}}</a>
+              <span class="feed-url" title="{{.Feed.OriginalURL}}">{{.Feed.OriginalURL}}</span>
+            </td>
+            <td>{{.EpisodeCount}}</td>
+            <td>{{.CachedCount}}</td>
+            <td>{{humanSize .TotalBytes}}</td>
+            <td>{{humanTime .Feed.LastFetchedAt}}</td>
+            <td>
+              <div class="actions">
+                <button class="btn btn-sm btn-secondary"
+                        hx-post="/ui/feeds/{{.Feed.ID}}/refresh"
+                        hx-target="#feed-list"
+                        hx-swap="outerHTML">Refresh</button>
+                <button class="btn btn-sm btn-secondary"
+                        hx-post="/ui/feeds/{{.Feed.ID}}/prefetch"
+                        hx-target="#feed-list"
+                        hx-swap="outerHTML">Prefetch</button>
+                <button class="btn btn-sm btn-danger"
+                        hx-delete="/ui/feeds/{{.Feed.ID}}"
+                        hx-target="#feed-list"
+                        hx-swap="outerHTML"
+                        hx-confirm="Delete {{.Feed.Title}}? This cannot be undone.">Delete</button>
+              </div>
+            </td>
+          </tr>
+          {{end}}
+        {{else}}
+          <tr class="empty-row"><td colspan="6">No feeds yet — add one above.</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{end}}

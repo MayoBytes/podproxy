@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"net/http"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"podproxy/internal/db"
 	"podproxy/internal/feed"
 	"podproxy/internal/proxy"
+	"podproxy/internal/ui"
 )
 
 func main() {
@@ -39,10 +41,24 @@ func main() {
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux, database, fetcher, prefetcher, cfg)
 	proxy.RegisterRoutes(mux, database, fetcher, cfg)
+	ui.RegisterRoutes(mux, database, fetcher, prefetcher, cfg)
 
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		stats, err := database.GetGlobalStats()
+		if err != nil {
+			log.Printf("health: get stats: %v", err)
+			w.Header().Set("Content-Type", "application/json")
+			http.Error(w, `{"status":"error"}`, http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"ok"}`))
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":          "ok",
+			"feeds":           stats.FeedCount,
+			"episodes":        stats.EpisodeCount,
+			"cached_episodes": stats.CachedCount,
+			"disk_bytes":      stats.DiskBytes,
+		})
 	})
 
 	srv := &http.Server{

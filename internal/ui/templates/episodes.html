@@ -1,0 +1,38 @@
+{{define "body"}}
+<a href="/ui" class="back">← Back to Feeds</a>
+
+<h1>{{.Feed.Title}}</h1>
+
+<p class="feed-meta">
+  Proxy URL (add to your podcast app): <code>{{.ProxyURL}}</code>
+</p>
+
+<div class="card">
+  <table>
+    <thead>
+      <tr>
+        <th>Episode</th>
+        <th>Published</th>
+        <th>Status</th>
+        <th>Size</th>
+        <th>Duration</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{if .Episodes}}
+        {{range .Episodes}}
+        <tr>
+          <td>{{.Title}}</td>
+          <td>{{humanTime .PubDate}}</td>
+          <td><span class="badge {{cacheClass .CacheStatus}}">{{.CacheStatus}}</span></td>
+          <td>{{humanSize .SizeBytes}}</td>
+          <td>{{humanDuration .DurationSec}}</td>
+        </tr>
+        {{end}}
+      {{else}}
+        <tr class="empty-row"><td colspan="5">No episodes found.</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}

@@ -1,0 +1,100 @@
+{{define "base"}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PodProxy</title>
+  <script src="https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: #f5f5f5; color: #1a1a1a; line-height: 1.5; }
+
+    /* Header */
+    header { background: #1c2333; color: #e6edf3; padding: 0.9rem 1.5rem; display: flex; align-items: center; gap: 1rem; }
+    header a { color: #e6edf3; text-decoration: none; font-size: 1.15rem; font-weight: 700; letter-spacing: -0.3px; }
+    header small { color: #8b949e; font-size: 0.8rem; }
+
+    /* Layout */
+    main { max-width: 1100px; margin: 2rem auto; padding: 0 1.25rem; }
+
+    /* Typography */
+    h1 { font-size: 1.35rem; font-weight: 600; margin-bottom: 1.25rem; }
+    h2 { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.75rem; }
+    a { color: #0969da; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* Card */
+    .card { background: #fff; border: 1px solid #d0d7de; border-radius: 6px; overflow: hidden; }
+    .card + .card { margin-top: 1rem; }
+
+    /* Add-feed form */
+    .add-form { padding: 1rem 1.25rem; }
+    .add-form h2 { margin-bottom: 0.6rem; font-size: 0.9rem; font-weight: 600; color: #57606a; text-transform: uppercase; letter-spacing: 0.04em; }
+    .form-row { display: flex; gap: 0.5rem; }
+    .form-row input[type=text] { flex: 1; padding: 0.45rem 0.75rem; border: 1px solid #d0d7de; border-radius: 6px; font-size: 0.9rem; min-width: 0; }
+    .form-row input[type=text]:focus { outline: none; border-color: #0969da; box-shadow: 0 0 0 3px rgba(9,105,218,0.12); }
+
+    /* Buttons */
+    .btn { padding: 0.45rem 0.9rem; border: 1px solid transparent; border-radius: 6px; cursor: pointer; font-size: 0.85rem; font-weight: 500; line-height: 1.4; transition: opacity 0.1s; }
+    .btn:disabled { opacity: 0.6; cursor: default; }
+    .btn-primary { background: #0969da; color: #fff; border-color: #0969da; }
+    .btn-primary:hover { background: #0860ca; }
+    .btn-secondary { background: #f6f8fa; color: #24292f; border-color: #d0d7de; }
+    .btn-secondary:hover { background: #eef1f4; }
+    .btn-danger { background: #da3633; color: #fff; border-color: #da3633; }
+    .btn-danger:hover { background: #c93130; }
+    .btn-sm { padding: 0.25rem 0.55rem; font-size: 0.78rem; }
+
+    /* Table */
+    table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+    thead th { padding: 0.6rem 1rem; text-align: left; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #57606a; background: #f6f8fa; border-bottom: 1px solid #d0d7de; }
+    tbody td { padding: 0.7rem 1rem; border-bottom: 1px solid #f0f0f0; vertical-align: middle; }
+    tbody tr:last-child td { border-bottom: none; }
+    tbody tr:hover td { background: #f6f8fa; }
+    .empty-row td { text-align: center; padding: 2.5rem; color: #57606a; }
+
+    /* Feed title cell */
+    .feed-title { font-weight: 500; }
+    .feed-url { font-size: 0.75rem; color: #57606a; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+
+    /* Action buttons in table */
+    .actions { display: flex; gap: 0.35rem; flex-wrap: nowrap; }
+
+    /* Cache status badges */
+    .badge { display: inline-block; padding: 0.18em 0.55em; border-radius: 12px; font-size: 0.72rem; font-weight: 600; }
+    .badge-cached    { background: #dafbe1; color: #116329; }
+    .badge-progress  { background: #fff8c5; color: #7d4e00; }
+    .badge-failed    { background: #ffebe9; color: #a40e26; }
+    .badge-none      { background: #eaeef2; color: #57606a; }
+
+    /* Alert messages */
+    .alert { padding: 0.65rem 1rem; border-radius: 6px; font-size: 0.85rem; margin-bottom: 0.75rem; }
+    .alert-ok  { background: #dafbe1; color: #116329; border: 1px solid #b2f0c1; }
+    .alert-err { background: #ffebe9; color: #a40e26; border: 1px solid #ffc1c0; }
+
+    /* Back link */
+    .back { display: inline-block; color: #57606a; font-size: 0.85rem; margin-bottom: 1rem; }
+    .back:hover { color: #1a1a1a; }
+
+    /* Feed meta on episodes page */
+    .feed-meta { font-size: 0.85rem; color: #57606a; margin-bottom: 1.25rem; }
+    .feed-meta code { background: #eaeef2; padding: 0.15em 0.4em; border-radius: 4px; font-size: 0.82rem; color: #1a1a1a; }
+
+    /* HTMX loading indicator */
+    .htmx-indicator { opacity: 0; font-size: 0.8rem; color: #57606a; transition: opacity 200ms; }
+    .htmx-request .htmx-indicator,
+    .htmx-request.htmx-indicator { opacity: 1; }
+  </style>
+</head>
+<body>
+  <header>
+    <a href="/ui">PodProxy</a>
+    <small>self-hosted podcast cache</small>
+  </header>
+  <main>
+    {{block "body" .}}{{end}}
+  </main>
+</body>
+</html>
+{{end}}
