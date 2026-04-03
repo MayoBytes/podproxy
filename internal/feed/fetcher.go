@@ -157,8 +157,14 @@ func Slugify(s string) string {
 // rewritePattern matches the full enclosure or media:content tag.
 var rewritePattern = regexp.MustCompile(`<(?:enclosure|media:content)[^>]*/?>`)
 
+// atomSelfPattern matches an atom:link tag that carries rel="self".
+var atomSelfPattern = regexp.MustCompile(`<atom:link[^>]*\brel="self"[^>]*/?>`)
+
 // urlAttrPattern extracts the url="..." attribute from a tag.
 var urlAttrPattern = regexp.MustCompile(`\burl="([^"]*)"`)
+
+// hrefAttrPattern extracts the href="..." attribute from a tag.
+var hrefAttrPattern = regexp.MustCompile(`\bhref="[^"]*"`)
 
 // typeAttrPattern extracts the type="..." attribute from a tag.
 var typeAttrPattern = regexp.MustCompile(`\btype="([^"]*)"`)
@@ -178,9 +184,11 @@ var mimeToExt = map[string]string{
 }
 
 // RewriteXML rewrites all enclosure/media:content URLs in raw RSS XML to point
-// to the proxy server, using the episode URL IDs from the DB.
+// to the proxy server, using the episode URL IDs from the DB. It also rewrites
+// the atom:link rel="self" href to the proxy feed URL so that podcast clients
+// (e.g. Apple Podcasts) do not follow the original upstream feed URL.
 func RewriteXML(raw []byte, feedID string, urlMap map[string]string, baseURL string) []byte {
-	return rewritePattern.ReplaceAllFunc(raw, func(match []byte) []byte {
+	result := rewritePattern.ReplaceAllFunc(raw, func(match []byte) []byte {
 		urlSub := urlAttrPattern.FindSubmatch(match)
 		if urlSub == nil {
 			return match
@@ -199,4 +207,10 @@ func RewriteXML(raw []byte, feedID string, urlMap map[string]string, baseURL str
 		newURL := fmt.Sprintf("%s/episodes/%s/%s%s", baseURL, feedID, urlID, ext)
 		return urlAttrPattern.ReplaceAll(match, []byte(`url="`+newURL+`"`))
 	})
+
+	proxyFeedURL := fmt.Sprintf("%s/feeds/%s.rss", baseURL, feedID)
+	result = atomSelfPattern.ReplaceAllFunc(result, func(match []byte) []byte {
+		return hrefAttrPattern.ReplaceAll(match, []byte(`href="`+proxyFeedURL+`"`))
+	})
+	return result
 }

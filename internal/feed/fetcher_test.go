@@ -129,6 +129,34 @@ func TestRewriteXML_MultipleItems(t *testing.T) {
 	}
 }
 
+func TestRewriteXML_RewritesAtomSelfLink(t *testing.T) {
+	raw := []byte(`<rss><channel>` +
+		`<atom:link href="https://upstream.example.com/feed.rss" rel="self" type="application/rss+xml"/>` +
+		`<item><enclosure url="https://cdn.example.com/ep1.mp3" type="audio/mpeg" length="0"/></item>` +
+		`</channel></rss>`)
+	urlMap := map[string]string{
+		"https://cdn.example.com/ep1.mp3": "deadbeef",
+	}
+	got := string(feed.RewriteXML(raw, "mypod", urlMap, "http://proxy.local:8080"))
+	if !strings.Contains(got, `href="http://proxy.local:8080/feeds/mypod.rss"`) {
+		t.Errorf("atom:link self href not rewritten; output:\n%s", got)
+	}
+	if strings.Contains(got, "upstream.example.com") {
+		t.Errorf("original upstream URL should have been removed; output:\n%s", got)
+	}
+}
+
+func TestRewriteXML_RewritesAtomSelfLinkHrefBeforeRel(t *testing.T) {
+	// href appears before rel in the tag
+	raw := []byte(`<rss><channel>` +
+		`<atom:link href="https://upstream.example.com/feed.rss" rel="self"/>` +
+		`</channel></rss>`)
+	got := string(feed.RewriteXML(raw, "pod", nil, "http://proxy:8080"))
+	if !strings.Contains(got, `href="http://proxy:8080/feeds/pod.rss"`) {
+		t.Errorf("atom:link self href not rewritten; output:\n%s", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Fetch
 // ---------------------------------------------------------------------------
