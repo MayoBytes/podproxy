@@ -36,3 +36,6 @@ data/
 
 # Runtime cache
 cache/
+
+# Runtime config
+config.yaml
