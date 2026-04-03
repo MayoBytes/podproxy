@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -265,6 +267,34 @@ func TestRefreshFeed_NotFound_Returns404(t *testing.T) {
 	w := env.do("POST", "/api/feeds/nonexistent/refresh", "")
 	if w.Code != http.StatusNotFound {
 		t.Errorf("want 404, got %d", w.Code)
+	}
+}
+
+func TestRefreshFeed_RegeneratesRSSCacheFile(t *testing.T) {
+	env := newAPITestEnv(t)
+	env.cfg.Storage.CacheDir = t.TempDir()
+
+	env.do("POST", "/api/feeds", `{"url":"`+env.rssSrv.URL+`"}`)
+
+	w := env.do("POST", "/api/feeds/my-test-podcast/refresh", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	cachePath := filepath.Join(env.cfg.Storage.CacheDir, "feeds", "my-test-podcast.rss")
+	data, err := os.ReadFile(cachePath)
+	if err != nil {
+		t.Fatalf("cache file not written: %v", err)
+	}
+	got := string(data)
+	if !strings.Contains(got, `url="http://proxy.local/episodes/my-test-podcast/`) {
+		t.Errorf("cache file missing proxy URL:\n%s", got)
+	}
+	if !strings.Contains(got, `.mp3"`) {
+		t.Errorf("cache file proxy URL missing .mp3 extension:\n%s", got)
+	}
+	if strings.Contains(got, "cdn.example.com") {
+		t.Errorf("cache file still contains original CDN URL:\n%s", got)
 	}
 }
 

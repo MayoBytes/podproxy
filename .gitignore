@@ -37,6 +37,9 @@ data/
 # Runtime cache
 cache/
 
+# RSS cache files (generated at runtime / test time)
+*.rss
+
 # Runtime config
 config.yaml
 

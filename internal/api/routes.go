@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -180,6 +182,23 @@ func (h *handler) refreshFeed(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.db.UpdateFeedFetchedAt(id, time.Now()); err != nil {
 		log.Printf("update fetched_at: %v", err)
+	}
+
+	// Regenerate the cached .rss file so the next GET /feeds/:id.rss
+	// serves URLs with the current rewrite logic (e.g. with file extensions).
+	episodes, err := h.db.ListEpisodesByFeed(id)
+	if err != nil {
+		log.Printf("list episodes for %s: %v", id, err)
+	} else {
+		urlMap := make(map[string]string, len(episodes))
+		for _, ep := range episodes {
+			urlMap[ep.OriginalURL] = ep.URLID
+		}
+		rewritten := feed.RewriteXML(result.RawXML, id, urlMap, h.cfg.Server.BaseURL)
+		cachePath := filepath.Join(h.cfg.Storage.CacheDir, "feeds", id+".rss")
+		if err := os.MkdirAll(filepath.Dir(cachePath), 0755); err == nil {
+			os.WriteFile(cachePath, rewritten, 0644)
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
