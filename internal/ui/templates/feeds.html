@@ -18,6 +18,17 @@
 </div>
 
 {{template "feed-list" .}}
+
+<script>
+document.addEventListener('click', function(e) {
+  var btn = e.target.closest('.copy-btn');
+  if (!btn) return;
+  navigator.clipboard.writeText(btn.dataset.url).then(function() {
+    btn.textContent = 'Copied!';
+    setTimeout(function() { btn.textContent = 'Copy'; }, 1500);
+  });
+});
+</script>
 {{end}}
 
 {{define "feed-list"}}
@@ -45,6 +56,10 @@
             <td>
               <a class="feed-title" href="/ui/feeds/{{.Feed.ID}}/episodes">{{.Feed.Title}}</a>
               <span class="feed-url" title="{{.Feed.OriginalURL}}">{{.Feed.OriginalURL}}</span>
+              <span class="proxy-url-row">
+                <code class="proxy-url" title="{{$.BaseURL}}/feeds/{{.Feed.ID}}.rss">{{$.BaseURL}}/feeds/{{.Feed.ID}}.rss</code>
+                <button class="btn btn-sm btn-secondary copy-btn" data-url="{{$.BaseURL}}/feeds/{{.Feed.ID}}.rss">Copy</button>
+              </span>
             </td>
             <td>{{.EpisodeCount}}</td>
             <td>{{.CachedCount}}</td>
