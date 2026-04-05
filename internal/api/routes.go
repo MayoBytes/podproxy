@@ -31,6 +31,7 @@ func RegisterRoutes(mux *http.ServeMux, database *db.DB, fetcher *feed.Fetcher, 
 	mux.HandleFunc("DELETE /api/feeds/{id}", h.deleteFeed)
 	mux.HandleFunc("POST /api/feeds/{id}/refresh", h.refreshFeed)
 	mux.HandleFunc("POST /api/feeds/{id}/prefetch", h.prefetchFeed)
+	mux.HandleFunc("POST /api/feeds/{id}/bulk-cache", h.bulkCacheFeed)
 }
 
 // addFeed handles POST /api/feeds
@@ -217,6 +218,64 @@ func (h *handler) refreshFeed(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":            id,
 		"episodes_seen": len(result.Episodes),
+	})
+}
+
+// bulkCacheFeed handles POST /api/feeds/{id}/bulk-cache.
+// Body: {"episode_ids": ["urlid1", "urlid2", ...]}
+func (h *handler) bulkCacheFeed(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	if _, err := h.db.GetFeed(id); errors.Is(err, db.ErrNotFound) {
+		http.Error(w, "feed not found", http.StatusNotFound)
+		return
+	} else if err != nil {
+		http.Error(w, "database error", http.StatusInternalServerError)
+		return
+	}
+
+	var body struct {
+		EpisodeIDs []string `json:"episode_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.EpisodeIDs) == 0 {
+		http.Error(w, `body must be {"episode_ids": ["..."]}`, http.StatusBadRequest)
+		return
+	}
+	if len(body.EpisodeIDs) > 500 {
+		http.Error(w, "episode_ids must contain 500 or fewer entries", http.StatusBadRequest)
+		return
+	}
+
+	if h.prefetcher == nil {
+		http.Error(w, "prefetcher not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	queued, skipped, dropped := 0, 0, 0
+	for _, urlID := range body.EpisodeIDs {
+		ep, err := h.db.GetEpisodeByURLID(id, urlID)
+		if errors.Is(err, db.ErrNotFound) {
+			continue
+		} else if err != nil {
+			log.Printf("api: bulk-cache get episode %s/%s: %v", id, urlID, err)
+			continue
+		}
+		if ep.CacheStatus == "cached" || ep.CacheStatus == "in_progress" {
+			skipped++
+			continue
+		}
+		if h.prefetcher.Enqueue(ep) {
+			queued++
+		} else {
+			dropped++
+		}
+	}
+
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"id":      id,
+		"queued":  queued,
+		"skipped": skipped,
+		"dropped": dropped,
 	})
 }
 

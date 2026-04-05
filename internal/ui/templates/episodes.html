@@ -15,15 +15,33 @@
 {{end}}
 
 {{define "episode-list"}}
-<div id="episode-list">
+<div id="episode-list"{{if .HasInProgress}} hx-get="/ui/feeds/{{.Feed.ID}}/episode-list" hx-trigger="every 4s" hx-target="#episode-list" hx-swap="outerHTML"{{end}}>
   {{if .Message}}
   <div class="alert {{if .IsError}}alert-err{{else}}alert-ok{{end}}">{{.Message}}</div>
   {{end}}
+
+  {{/* Empty form anchor: checkboxes in the table below use form="bulk-cache-form"
+       to associate with this element across the DOM — do not remove. */}}
+  <form id="bulk-cache-form"
+        hx-post="/ui/feeds/{{.Feed.ID}}/bulk-cache"
+        hx-target="#episode-list"
+        hx-swap="outerHTML"
+        hx-indicator="#bulk-indicator">
+  </form>
+
+  <div class="bulk-toolbar">
+    <span class="bulk-label">Select:</span>
+    <button type="button" class="btn btn-sm btn-secondary" onclick="bulkSelectAll()">All</button>
+    <button type="button" class="btn btn-sm btn-secondary" onclick="bulkSelectNone()">None</button>
+    <button type="submit" form="bulk-cache-form" class="btn btn-sm btn-primary">Cache Selected</button>
+    <span id="bulk-indicator" class="htmx-indicator">Queuing…</span>
+  </div>
 
   <div class="card">
     <table>
       <thead>
         <tr>
+          <th></th>
           <th>Episode</th>
           <th>Published</th>
           <th>Status</th>
@@ -36,6 +54,11 @@
         {{if .Episodes}}
           {{range .Episodes}}
           <tr>
+            <td class="col-check">
+              {{if or (eq .CacheStatus "none") (eq .CacheStatus "failed")}}
+              <input type="checkbox" name="ep" value="{{.URLID}}" form="bulk-cache-form" class="bulk-ep-check">
+              {{end}}
+            </td>
             <td>{{.Title}}</td>
             <td>{{humanTime .PubDate}}</td>
             <td><span class="badge {{cacheClass .CacheStatus}}">{{.CacheStatus}}</span></td>
@@ -43,13 +66,13 @@
             <td>{{humanDuration .DurationSec}}</td>
             <td>
               {{if or (eq .CacheStatus "none") (eq .CacheStatus "failed")}}
-              <button class="btn btn-sm btn-secondary"
+              <button type="button" class="btn btn-sm btn-secondary"
                       hx-post="/ui/feeds/{{$.Feed.ID}}/episodes/{{.URLID}}/cache"
                       hx-target="#episode-list"
                       hx-swap="outerHTML">Cache</button>
               {{end}}
               {{if eq .CacheStatus "cached"}}
-              <button class="btn btn-sm btn-danger"
+              <button type="button" class="btn btn-sm btn-danger"
                       hx-delete="/ui/feeds/{{$.Feed.ID}}/episodes/{{.URLID}}"
                       hx-target="#episode-list"
                       hx-swap="outerHTML"
@@ -59,10 +82,11 @@
           </tr>
           {{end}}
         {{else}}
-          <tr class="empty-row"><td colspan="6">No episodes found.</td></tr>
+          <tr class="empty-row"><td colspan="7">No episodes found.</td></tr>
         {{end}}
       </tbody>
     </table>
   </div>
 </div>
+
 {{end}}

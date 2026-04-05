@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -375,5 +376,165 @@ func TestPrefetchFeed_Returns202(t *testing.T) {
 	}
 	if resp["status"] != "queued" {
 		t.Errorf("status: want %q, got %q", "queued", resp["status"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/feeds/{id}/bulk-cache
+// ---------------------------------------------------------------------------
+
+func TestBulkCacheFeed_NotFound_Returns404(t *testing.T) {
+	env := newAPITestEnv(t)
+	w := env.do("POST", "/api/feeds/nonexistent/bulk-cache", `{"episode_ids":["abc"]}`)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("want 404, got %d", w.Code)
+	}
+}
+
+func TestBulkCacheFeed_NilPrefetcher_Returns503(t *testing.T) {
+	env := newAPITestEnv(t) // prefetcher is nil in default env
+	env.do("POST", "/api/feeds", `{"url":"`+env.rssSrv.URL+`"}`)
+
+	w := env.do("POST", "/api/feeds/my-test-podcast/bulk-cache", `{"episode_ids":["abc"]}`)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("want 503, got %d", w.Code)
+	}
+}
+
+func TestBulkCacheFeed_BadJSON_Returns400(t *testing.T) {
+	env := newAPITestEnv(t)
+	env.do("POST", "/api/feeds", `{"url":"`+env.rssSrv.URL+`"}`)
+
+	w := env.do("POST", "/api/feeds/my-test-podcast/bulk-cache", "not json")
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("want 400, got %d", w.Code)
+	}
+}
+
+func TestBulkCacheFeed_EmptyEpisodeIDs_Returns400(t *testing.T) {
+	env := newAPITestEnv(t)
+	env.do("POST", "/api/feeds", `{"url":"`+env.rssSrv.URL+`"}`)
+
+	w := env.do("POST", "/api/feeds/my-test-podcast/bulk-cache", `{"episode_ids":[]}`)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("want 400, got %d", w.Code)
+	}
+}
+
+func TestBulkCacheFeed_TooManyEpisodeIDs_Returns400(t *testing.T) {
+	env := newAPITestEnv(t)
+	env.do("POST", "/api/feeds", `{"url":"`+env.rssSrv.URL+`"}`)
+
+	ids := make([]string, 501)
+	for i := range ids {
+		ids[i] = fmt.Sprintf(`"ep%d"`, i)
+	}
+	body := `{"episode_ids":[` + strings.Join(ids, ",") + `]}`
+	w := env.do("POST", "/api/feeds/my-test-podcast/bulk-cache", body)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("want 400, got %d", w.Code)
+	}
+}
+
+func TestBulkCacheFeed_Returns202WithCounts(t *testing.T) {
+	database, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+
+	rssSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/rss+xml")
+		w.Write([]byte(apiTestRSS))
+	}))
+	t.Cleanup(rssSrv.Close)
+
+	cfg := &config.Config{
+		Server:   config.ServerConfig{BaseURL: "http://proxy.local"},
+		Storage:  config.StorageConfig{CacheDir: t.TempDir()},
+		Defaults: config.DefaultsConfig{RefreshIntervalMinutes: 60, PrefetchConcurrency: 1},
+	}
+
+	prefetcher := feed.NewPrefetcher(database, cfg)
+	t.Cleanup(prefetcher.Stop)
+
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux, database, feed.NewFetcher(cfg), prefetcher, cfg)
+
+	env := &apiTestEnv{db: database, mux: mux, cfg: cfg, rssSrv: rssSrv}
+	env.do("POST", "/api/feeds", `{"url":"`+rssSrv.URL+`"}`)
+
+	eps, err := database.ListEpisodesByFeed("my-test-podcast")
+	if err != nil || len(eps) == 0 {
+		t.Fatalf("setup: ListEpisodesByFeed: %v (count=%d)", err, len(eps))
+	}
+
+	body := `{"episode_ids":["` + eps[0].URLID + `","nonexistent-urlid"]}`
+	w := env.do("POST", "/api/feeds/my-test-podcast/bulk-cache", body)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("want 202, got %d\nbody: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]any
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["id"] != "my-test-podcast" {
+		t.Errorf("id: want %q, got %v", "my-test-podcast", resp["id"])
+	}
+	if int(resp["queued"].(float64)) != 1 {
+		t.Errorf("queued: want 1, got %v", resp["queued"])
+	}
+	if int(resp["skipped"].(float64)) != 0 {
+		t.Errorf("skipped: want 0, got %v", resp["skipped"])
+	}
+}
+
+func TestBulkCacheFeed_SkipsCachedAndInProgress(t *testing.T) {
+	database, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+
+	rssSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/rss+xml")
+		w.Write([]byte(apiTestRSS))
+	}))
+	t.Cleanup(rssSrv.Close)
+
+	cfg := &config.Config{
+		Server:   config.ServerConfig{BaseURL: "http://proxy.local"},
+		Storage:  config.StorageConfig{CacheDir: t.TempDir()},
+		Defaults: config.DefaultsConfig{RefreshIntervalMinutes: 60, PrefetchConcurrency: 1},
+	}
+
+	prefetcher := feed.NewPrefetcher(database, cfg)
+	t.Cleanup(prefetcher.Stop)
+
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux, database, feed.NewFetcher(cfg), prefetcher, cfg)
+
+	env := &apiTestEnv{db: database, mux: mux, cfg: cfg, rssSrv: rssSrv}
+	env.do("POST", "/api/feeds", `{"url":"`+rssSrv.URL+`"}`)
+
+	eps, err := database.ListEpisodesByFeed("my-test-podcast")
+	if err != nil || len(eps) == 0 {
+		t.Fatalf("setup: ListEpisodesByFeed: %v (count=%d)", err, len(eps))
+	}
+	cachedPath := "/some/path"
+	database.UpdateEpisodeCacheStatus(eps[0].ID, "cached", &cachedPath, 1234, "audio/mpeg")
+
+	body := `{"episode_ids":["` + eps[0].URLID + `"]}`
+	w := env.do("POST", "/api/feeds/my-test-podcast/bulk-cache", body)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("want 202, got %d\nbody: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]any
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if int(resp["queued"].(float64)) != 0 {
+		t.Errorf("queued: want 0, got %v", resp["queued"])
+	}
+	if int(resp["skipped"].(float64)) != 1 {
+		t.Errorf("skipped: want 1, got %v", resp["skipped"])
 	}
 }

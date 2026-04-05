@@ -49,10 +49,12 @@ func RegisterRoutes(mux *http.ServeMux, database *db.DB, fetcher *feed.Fetcher, 
 	h := &uiHandler{db: database, fetcher: fetcher, prefetcher: prefetcher, cfg: cfg}
 	mux.HandleFunc("GET /ui", h.feedsPage)
 	mux.HandleFunc("GET /ui/feeds/{id}/episodes", h.episodesPage)
+	mux.HandleFunc("GET /ui/feeds/{id}/episode-list", h.episodeListFragment)
 	mux.HandleFunc("POST /ui/feeds/add", h.addFeed)
 	mux.HandleFunc("DELETE /ui/feeds/{id}", h.deleteFeed)
 	mux.HandleFunc("POST /ui/feeds/{id}/refresh", h.refreshFeed)
 	mux.HandleFunc("POST /ui/feeds/{id}/toggle-autoprefetch", h.toggleAutoPrefetch)
+	mux.HandleFunc("POST /ui/feeds/{id}/bulk-cache", h.bulkCacheEpisodes)
 	mux.HandleFunc("POST /ui/feeds/{id}/episodes/{epid}/cache", h.cacheEpisode)
 	mux.HandleFunc("DELETE /ui/feeds/{id}/episodes/{epid}", h.deleteEpisodeCache)
 }
@@ -99,9 +101,10 @@ func (h *uiHandler) episodesPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := episodesPageData{
-		Feed:     f,
-		Episodes: eps,
-		ProxyURL: fmt.Sprintf("%s/feeds/%s.rss", h.cfg.Server.BaseURL, f.ID),
+		Feed:          f,
+		Episodes:      eps,
+		ProxyURL:      fmt.Sprintf("%s/feeds/%s.rss", h.cfg.Server.BaseURL, f.ID),
+		HasInProgress: hasInProgress(eps),
 	}
 	w.Header().Set("Content-Type", "text/html")
 	if err := episodesTmpl.ExecuteTemplate(w, "base", data); err != nil {
@@ -314,6 +317,59 @@ func (h *uiHandler) deleteEpisodeCache(w http.ResponseWriter, r *http.Request) {
 	h.renderEpisodeList(w, feedID, fmt.Sprintf("Deleted cached file for %q.", ep.Title), false)
 }
 
+// episodeListFragment handles GET /ui/feeds/{id}/episode-list — returns only
+// the #episode-list fragment, used for HTMX polling while downloads are active.
+func (h *uiHandler) episodeListFragment(w http.ResponseWriter, r *http.Request) {
+	h.renderEpisodeList(w, r.PathValue("id"), "", false)
+}
+
+// bulkCacheEpisodes handles POST /ui/feeds/{id}/bulk-cache.
+// It accepts one or more "ep" form values (episode URLIDs) and enqueues each
+// uncached episode for background download.
+func (h *uiHandler) bulkCacheEpisodes(w http.ResponseWriter, r *http.Request) {
+	feedID := r.PathValue("id")
+	if err := r.ParseForm(); err != nil {
+		h.renderEpisodeList(w, feedID, "Invalid request.", true)
+		return
+	}
+	urlIDs := r.Form["ep"]
+	if len(urlIDs) == 0 {
+		h.renderEpisodeList(w, feedID, "No episodes selected.", false)
+		return
+	}
+	if h.prefetcher == nil {
+		h.renderEpisodeList(w, feedID, "Prefetcher not available.", true)
+		return
+	}
+	queued, skipped, dropped := 0, 0, 0
+	for _, urlID := range urlIDs {
+		ep, err := h.db.GetEpisodeByURLID(feedID, urlID)
+		if errors.Is(err, db.ErrNotFound) {
+			continue
+		} else if err != nil {
+			log.Printf("ui: bulk-cache get episode %s/%s: %v", feedID, urlID, err)
+			continue
+		}
+		if ep.CacheStatus == "cached" || ep.CacheStatus == "in_progress" {
+			skipped++
+			continue
+		}
+		if h.prefetcher.Enqueue(ep) {
+			queued++
+		} else {
+			dropped++
+		}
+	}
+	msg := fmt.Sprintf("Queued %d episode(s) for caching.", queued)
+	if skipped > 0 {
+		msg += fmt.Sprintf(" %d already cached or in progress.", skipped)
+	}
+	if dropped > 0 {
+		msg += fmt.Sprintf(" %d dropped (queue full — try again shortly).", dropped)
+	}
+	h.renderEpisodeList(w, feedID, msg, false)
+}
+
 // renderEpisodeList writes only the #episode-list fragment (HTMX target).
 func (h *uiHandler) renderEpisodeList(w http.ResponseWriter, feedID, message string, isError bool) {
 	f, err := h.db.GetFeed(feedID)
@@ -331,16 +387,26 @@ func (h *uiHandler) renderEpisodeList(w http.ResponseWriter, feedID, message str
 		return
 	}
 	data := &episodesPageData{
-		Feed:     f,
-		Episodes: eps,
-		ProxyURL: fmt.Sprintf("%s/feeds/%s.rss", h.cfg.Server.BaseURL, f.ID),
-		Message:  message,
-		IsError:  isError,
+		Feed:          f,
+		Episodes:      eps,
+		ProxyURL:      fmt.Sprintf("%s/feeds/%s.rss", h.cfg.Server.BaseURL, f.ID),
+		Message:       message,
+		IsError:       isError,
+		HasInProgress: hasInProgress(eps),
 	}
 	w.Header().Set("Content-Type", "text/html")
 	if err := episodesTmpl.ExecuteTemplate(w, "episode-list", data); err != nil {
 		log.Printf("ui: render episode-list fragment: %v", err)
 	}
+}
+
+func hasInProgress(eps []*db.Episode) bool {
+	for _, ep := range eps {
+		if ep.CacheStatus == "in_progress" {
+			return true
+		}
+	}
+	return false
 }
 
 // renderFeedList writes only the #feed-list fragment (HTMX target).
@@ -369,11 +435,12 @@ type feedsPageData struct {
 }
 
 type episodesPageData struct {
-	Feed     *db.Feed
-	Episodes []*db.Episode
-	ProxyURL string
-	Message  string
-	IsError  bool
+	Feed          *db.Feed
+	Episodes      []*db.Episode
+	ProxyURL      string
+	Message       string
+	IsError       bool
+	HasInProgress bool
 }
 
 func (h *uiHandler) buildFeedsData(message string) (*feedsPageData, error) {

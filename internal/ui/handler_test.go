@@ -15,6 +15,37 @@ import (
 	"podproxy/internal/ui"
 )
 
+// newUITestEnvWithPrefetcher is like newUITestEnv but registers a live prefetcher.
+func newUITestEnvWithPrefetcher(t *testing.T) *uiTestEnv {
+	t.Helper()
+
+	rssSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/rss+xml")
+		w.Write([]byte(uiTestRSS))
+	}))
+	t.Cleanup(rssSrv.Close)
+
+	database, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+
+	cfg := &config.Config{
+		Server:   config.ServerConfig{Port: 8080, BaseURL: "http://proxy.local"},
+		Storage:  config.StorageConfig{CacheDir: t.TempDir()},
+		Defaults: config.DefaultsConfig{RefreshIntervalMinutes: 60, PrefetchConcurrency: 1},
+	}
+
+	prefetcher := feed.NewPrefetcher(database, cfg)
+	t.Cleanup(prefetcher.Stop)
+
+	mux := http.NewServeMux()
+	ui.RegisterRoutes(mux, database, feed.NewFetcher(cfg), prefetcher, cfg)
+
+	return &uiTestEnv{db: database, mux: mux, cfg: cfg, rssSrv: rssSrv}
+}
+
 const uiTestRSS = `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0">
   <channel>
@@ -498,5 +529,111 @@ func TestUIDeleteEpisodeCache_Cached_DeletesFileAndResetsStatus(t *testing.T) {
 	}
 	if updated.CacheStatus != "none" {
 		t.Errorf("cache status should be none after delete, got %q", updated.CacheStatus)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GET /ui/feeds/{id}/episode-list
+// ---------------------------------------------------------------------------
+
+func TestEpisodeListFragment_Returns200(t *testing.T) {
+	env := newUITestEnv(t)
+	env.doForm("POST", "/ui/feeds/add", url.Values{"url": {env.rssSrv.URL}})
+
+	w := env.do("GET", "/ui/feeds/ui-test-podcast/episode-list")
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d\nbody: %s", w.Code, w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("Content-Type: want text/html, got %q", ct)
+	}
+	if !strings.Contains(w.Body.String(), "episode-list") {
+		t.Error("response should contain the episode-list fragment")
+	}
+}
+
+func TestEpisodeListFragment_NotFound_Returns404(t *testing.T) {
+	env := newUITestEnv(t)
+	w := env.do("GET", "/ui/feeds/nonexistent/episode-list")
+	if w.Code != http.StatusNotFound {
+		t.Errorf("want 404, got %d", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// POST /ui/feeds/{id}/bulk-cache
+// ---------------------------------------------------------------------------
+
+func TestUIBulkCacheEpisodes_NilPrefetcher_ShowsError(t *testing.T) {
+	env := newUITestEnv(t) // prefetcher is nil
+	env.doForm("POST", "/ui/feeds/add", url.Values{"url": {env.rssSrv.URL}})
+
+	eps, err := env.db.ListEpisodesByFeed("ui-test-podcast")
+	if err != nil || len(eps) == 0 {
+		t.Fatalf("setup: ListEpisodesByFeed: %v (count=%d)", err, len(eps))
+	}
+
+	w := env.doForm("POST", "/ui/feeds/ui-test-podcast/bulk-cache", url.Values{"ep": {eps[0].URLID}})
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200 (rendered fragment), got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "alert-err") {
+		t.Error("nil prefetcher should render error alert")
+	}
+}
+
+func TestUIBulkCacheEpisodes_NoEpisodesSelected_ShowsMessage(t *testing.T) {
+	env := newUITestEnvWithPrefetcher(t)
+	env.doForm("POST", "/ui/feeds/add", url.Values{"url": {env.rssSrv.URL}})
+
+	w := env.doForm("POST", "/ui/feeds/ui-test-podcast/bulk-cache", url.Values{})
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200 (rendered fragment), got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "No episodes selected") {
+		t.Error("response should mention no episodes were selected")
+	}
+}
+
+func TestUIBulkCacheEpisodes_QueuesUncachedEpisodes(t *testing.T) {
+	env := newUITestEnvWithPrefetcher(t)
+	env.doForm("POST", "/ui/feeds/add", url.Values{"url": {env.rssSrv.URL}})
+
+	eps, err := env.db.ListEpisodesByFeed("ui-test-podcast")
+	if err != nil || len(eps) == 0 {
+		t.Fatalf("setup: ListEpisodesByFeed: %v (count=%d)", err, len(eps))
+	}
+
+	w := env.doForm("POST", "/ui/feeds/ui-test-podcast/bulk-cache", url.Values{"ep": {eps[0].URLID}})
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d\nbody: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "alert-err") {
+		t.Error("successful bulk-cache should not render error alert")
+	}
+	if !strings.Contains(body, "Queued 1 episode") {
+		t.Errorf("response should confirm queued count; got: %s", body)
+	}
+}
+
+func TestUIBulkCacheEpisodes_SkipsCachedEpisodes(t *testing.T) {
+	env := newUITestEnvWithPrefetcher(t)
+	env.doForm("POST", "/ui/feeds/add", url.Values{"url": {env.rssSrv.URL}})
+
+	eps, err := env.db.ListEpisodesByFeed("ui-test-podcast")
+	if err != nil || len(eps) == 0 {
+		t.Fatalf("setup: ListEpisodesByFeed: %v (count=%d)", err, len(eps))
+	}
+	cachedPath := "/some/path"
+	env.db.UpdateEpisodeCacheStatus(eps[0].ID, "cached", &cachedPath, 1234, "audio/mpeg")
+
+	w := env.doForm("POST", "/ui/feeds/ui-test-podcast/bulk-cache", url.Values{"ep": {eps[0].URLID}})
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d\nbody: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "already cached or in progress") {
+		t.Errorf("response should mention skipped episodes; got: %s", body)
 	}
 }
