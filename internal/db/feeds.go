@@ -60,6 +60,20 @@ func (db *DB) UpdateFeedFetchedAt(id string, t time.Time) error {
 	return err
 }
 
+func (db *DB) ToggleFeedAutoPrefetch(id string) (bool, error) {
+	res, err := db.Exec(`UPDATE feeds SET auto_prefetch = NOT auto_prefetch WHERE id = ?`, id)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return false, fmt.Errorf("feed %w", ErrNotFound)
+	}
+	var newVal bool
+	err = db.QueryRow(`SELECT auto_prefetch FROM feeds WHERE id = ?`, id).Scan(&newVal)
+	return newVal, err
+}
+
 // DeleteFeed removes a feed and all its episodes atomically.
 // Returns ErrNotFound if no feed with that ID exists.
 func (db *DB) DeleteFeed(id string) error {

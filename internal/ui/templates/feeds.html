@@ -61,10 +61,13 @@
                         hx-post="/ui/feeds/{{.Feed.ID}}/refresh"
                         hx-target="#feed-list"
                         hx-swap="outerHTML">Refresh</button>
-                <button class="btn btn-sm btn-secondary"
-                        hx-post="/ui/feeds/{{.Feed.ID}}/prefetch"
+                <button class="btn btn-sm {{if .Feed.AutoPrefetch}}btn-primary{{else}}btn-secondary{{end}}"
+                        hx-post="/ui/feeds/{{.Feed.ID}}/toggle-autoprefetch"
                         hx-target="#feed-list"
-                        hx-swap="outerHTML">Prefetch</button>
+                        hx-swap="outerHTML"
+                        title="{{if .Feed.AutoPrefetch}}Auto-prefetch is on — click to disable{{else}}Auto-prefetch is off — click to enable{{end}}">
+                  Auto-prefetch {{if .Feed.AutoPrefetch}}On{{else}}Off{{end}}
+                </button>
                 <button class="btn btn-sm btn-danger"
                         hx-delete="/ui/feeds/{{.Feed.ID}}"
                         hx-target="#feed-list"

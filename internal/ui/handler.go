@@ -52,7 +52,7 @@ func RegisterRoutes(mux *http.ServeMux, database *db.DB, fetcher *feed.Fetcher, 
 	mux.HandleFunc("POST /ui/feeds/add", h.addFeed)
 	mux.HandleFunc("DELETE /ui/feeds/{id}", h.deleteFeed)
 	mux.HandleFunc("POST /ui/feeds/{id}/refresh", h.refreshFeed)
-	mux.HandleFunc("POST /ui/feeds/{id}/prefetch", h.prefetchFeed)
+	mux.HandleFunc("POST /ui/feeds/{id}/toggle-autoprefetch", h.toggleAutoPrefetch)
 	mux.HandleFunc("POST /ui/feeds/{id}/episodes/{epid}/cache", h.cacheEpisode)
 	mux.HandleFunc("DELETE /ui/feeds/{id}/episodes/{epid}", h.deleteEpisodeCache)
 }
@@ -225,22 +225,26 @@ func (h *uiHandler) refreshFeed(w http.ResponseWriter, r *http.Request) {
 		false)
 }
 
-func (h *uiHandler) prefetchFeed(w http.ResponseWriter, r *http.Request) {
+func (h *uiHandler) toggleAutoPrefetch(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if _, err := h.db.GetFeed(id); errors.Is(err, db.ErrNotFound) {
+	f, err := h.db.GetFeed(id)
+	if errors.Is(err, db.ErrNotFound) {
 		h.renderFeedList(w, "Feed not found.", true)
 		return
 	} else if err != nil {
 		h.renderFeedList(w, "Database error.", true)
 		return
 	}
-
-	if h.prefetcher == nil {
-		h.renderFeedList(w, "Prefetcher not available.", true)
+	newVal, err := h.db.ToggleFeedAutoPrefetch(id)
+	if err != nil {
+		h.renderFeedList(w, "Failed to update auto-prefetch setting.", true)
 		return
 	}
-	h.prefetcher.EnqueueFeedEpisodes(id)
-	h.renderFeedList(w, fmt.Sprintf("Queued %q for prefetch.", id), false)
+	if newVal {
+		h.renderFeedList(w, fmt.Sprintf("Auto-prefetch enabled for %q.", f.Title), false)
+	} else {
+		h.renderFeedList(w, fmt.Sprintf("Auto-prefetch disabled for %q.", f.Title), false)
+	}
 }
 
 func (h *uiHandler) cacheEpisode(w http.ResponseWriter, r *http.Request) {
