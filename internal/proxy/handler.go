@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -35,9 +36,16 @@ func RegisterRoutes(mux *http.ServeMux, database *db.DB, fetcher *feed.Fetcher, 
 		// Shared client with a header timeout so a slow CDN can't hang a goroutine
 		// forever. WriteTimeout on the server is 0 (streaming), so we guard the
 		// outbound side here instead.
+		//
+		// HTTP/2 is disabled deliberately: multiplexing concurrent episode requests
+		// over a single TCP connection causes some CDNs (e.g. Cloudflare-backed
+		// hosts) to reset the connection when they detect multiple authenticated
+		// streams, failing all in-flight requests. HTTP/1.1 gives each request its
+		// own connection and avoids this.
 		client: &http.Client{
 			Transport: &http.Transport{
 				ResponseHeaderTimeout: 30 * time.Second,
+				TLSNextProto:          make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
 			},
 		},
 	}
