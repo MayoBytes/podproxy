@@ -2,6 +2,7 @@ package feed
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"log"
@@ -38,9 +39,13 @@ func NewPrefetcher(database *db.DB, cfg *config.Config) *Prefetcher {
 	return &Prefetcher{
 		database: database,
 		cfg:      cfg,
+		// HTTP/2 disabled for the same reason as the proxy handler: some CDNs
+		// (e.g. Podbean/Cloudflare) reset multiplexed connections when they detect
+		// concurrent streams, causing unexpected EOF on every download attempt.
 		client: &http.Client{
 			Transport: &http.Transport{
 				ResponseHeaderTimeout: 30 * time.Second,
+				TLSNextProto:          make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
 			},
 		},
 		queue:  make(chan *db.Episode, prefetchQueueSize),
