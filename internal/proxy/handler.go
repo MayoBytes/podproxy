@@ -83,15 +83,20 @@ func (h *handler) serveFeed(w http.ResponseWriter, r *http.Request) {
 	cachePath := filepath.Join(h.cfg.Storage.CacheDir, "feeds", feedID+".rss")
 	staleDur := time.Duration(f.RefreshIntervalMinutes) * time.Minute
 
-	// Serve from disk cache if the feed is still fresh.
+	// Serve from disk cache if the feed is still fresh AND the cache file was
+	// written after the last DB refresh. The poller and UI refresh handlers update
+	// LastFetchedAt without rewriting the disk cache, so a stale file (mtime
+	// before LastFetchedAt) would omit proxy URLs for newly-discovered episodes.
 	if f.LastFetchedAt != nil && time.Since(*f.LastFetchedAt) < staleDur {
-		if data, err := os.ReadFile(cachePath); err == nil {
-			w.Header().Set("Content-Type", "application/rss+xml; charset=utf-8")
-			w.Header().Set("Content-Length", strconv.Itoa(len(data)))
-			w.Write(data)
-			return
+		if info, err := os.Stat(cachePath); err == nil && !info.ModTime().Before(*f.LastFetchedAt) {
+			if data, err := os.ReadFile(cachePath); err == nil {
+				w.Header().Set("Content-Type", "application/rss+xml; charset=utf-8")
+				w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+				w.Write(data)
+				return
+			}
 		}
-		// Cache file missing despite DB saying fresh — fall through to re-fetch.
+		// Cache file missing or older than the last DB refresh — fall through to re-fetch.
 	}
 
 	// Fetch fresh XML from origin. Fetch also parses episodes so we can upsert
