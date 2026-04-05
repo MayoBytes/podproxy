@@ -118,8 +118,10 @@ func (h *handler) serveFeed(w http.ResponseWriter, r *http.Request) {
 
 	// Persist the rewritten XML so subsequent requests within the refresh window
 	// are served from disk.
-	if err := os.MkdirAll(filepath.Dir(cachePath), 0755); err == nil {
-		os.WriteFile(cachePath, rewritten, 0644)
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0755); err != nil {
+		log.Printf("mkdirall feed cache %s: %v", feedID, err)
+	} else if err := os.WriteFile(cachePath, rewritten, 0644); err != nil {
+		log.Printf("write feed cache %s: %v", feedID, err)
 	}
 
 	w.Header().Set("Content-Type", "application/rss+xml; charset=utf-8")
