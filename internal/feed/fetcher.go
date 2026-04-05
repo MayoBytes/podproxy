@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -109,7 +110,38 @@ func itemToEpisode(feedID string, item *gofeed.Item) *db.Episode {
 		ep.PubDate = item.PublishedParsed
 	}
 
+	if item.Enclosures[0].Length != "" {
+		if n, err := strconv.ParseInt(item.Enclosures[0].Length, 10, 64); err == nil && n > 0 {
+			ep.SizeBytes = n
+		}
+	}
+
+	if item.ITunesExt != nil && item.ITunesExt.Duration != "" {
+		ep.DurationSec = parseDuration(item.ITunesExt.Duration)
+	}
+
 	return ep
+}
+
+// parseDuration parses an iTunes duration string into seconds.
+// Accepts "HH:MM:SS", "MM:SS", or a plain integer seconds value.
+func parseDuration(s string) int {
+	parts := strings.Split(s, ":")
+	switch len(parts) {
+	case 1:
+		n, _ := strconv.Atoi(parts[0])
+		return n
+	case 2:
+		m, _ := strconv.Atoi(parts[0])
+		sec, _ := strconv.Atoi(parts[1])
+		return m*60 + sec
+	case 3:
+		h, _ := strconv.Atoi(parts[0])
+		m, _ := strconv.Atoi(parts[1])
+		sec, _ := strconv.Atoi(parts[2])
+		return h*3600 + m*60 + sec
+	}
+	return 0
 }
 
 // episodeURLID returns a short, URL-safe identifier derived from the RSS GUID.

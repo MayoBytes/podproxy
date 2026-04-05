@@ -30,7 +30,7 @@ func (db *DB) UpsertEpisode(e *Episode) error {
 			original_url = excluded.original_url,
 			pub_date     = excluded.pub_date,
 			duration_sec = excluded.duration_sec,
-			size_bytes   = excluded.size_bytes`,
+			size_bytes   = CASE WHEN episodes.cache_status = 'cached' THEN episodes.size_bytes ELSE excluded.size_bytes END`,
 		e.ID, e.FeedID, e.Title, e.OriginalURL, e.PubDate, e.DurationSec, e.SizeBytes, e.CacheStatus, e.URLID,
 	)
 	return err
