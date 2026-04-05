@@ -69,7 +69,9 @@
                         hx-delete="/ui/feeds/{{.Feed.ID}}"
                         hx-target="#feed-list"
                         hx-swap="outerHTML"
-                        hx-confirm="Delete {{.Feed.Title}}? This cannot be undone.">Delete</button>
+                        hx-confirm="Delete {{.Feed.Title}}?
+
+This will permanently delete all cached episodes and the cached feed file from disk. This cannot be undone.">Delete</button>
               </div>
             </td>
           </tr>

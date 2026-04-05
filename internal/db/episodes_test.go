@@ -122,6 +122,30 @@ func TestListEpisodesByFeed_Empty(t *testing.T) {
 	}
 }
 
+func TestHasInProgressEpisodes(t *testing.T) {
+	d := openTestDB(t)
+	seedFeed(t, d, "pod")
+	d.UpsertEpisode(&Episode{
+		ID: "pod/ep1", FeedID: "pod", Title: "Ep1",
+		OriginalURL: "https://cdn.example.com/ep1.mp3",
+		CacheStatus: "none", URLID: "uid1",
+	})
+
+	if got, _ := d.HasInProgressEpisodes("pod"); got {
+		t.Error("want false when no in-progress episodes")
+	}
+
+	_ = d.UpdateEpisodeCacheStatus("pod/ep1", "in_progress", nil, 0, "")
+	if got, _ := d.HasInProgressEpisodes("pod"); !got {
+		t.Error("want true when episode is in_progress")
+	}
+
+	// Unrelated feed should not be affected.
+	if got, _ := d.HasInProgressEpisodes("other"); got {
+		t.Error("want false for feed with no episodes")
+	}
+}
+
 func TestUpdateEpisodeCacheStatus(t *testing.T) {
 	d := openTestDB(t)
 	seedFeed(t, d, "pod")

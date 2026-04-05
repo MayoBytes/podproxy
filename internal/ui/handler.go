@@ -171,18 +171,27 @@ func (h *uiHandler) addFeed(w http.ResponseWriter, r *http.Request) {
 
 func (h *uiHandler) deleteFeed(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	err := h.db.DeleteFeed(id)
-	if errors.Is(err, db.ErrNotFound) {
-		h.renderFeedList(w, "Feed not found.", true)
+	if inProgress, err := h.db.HasInProgressEpisodes(id); err != nil {
+		h.renderFeedList(w, "Database error.", true)
+		return
+	} else if inProgress {
+		h.renderFeedList(w, "Cannot delete: one or more episodes are currently being downloaded.", true)
 		return
 	}
-	if err != nil {
+	if err := h.db.DeleteFeed(id); errors.Is(err, db.ErrNotFound) {
+		h.renderFeedList(w, "Feed not found.", true)
+		return
+	} else if err != nil {
 		h.renderFeedList(w, "Failed to delete feed.", true)
 		return
 	}
-	cacheDir := filepath.Join(h.cfg.Storage.CacheDir, "episodes", id)
-	if err := os.RemoveAll(cacheDir); err != nil {
-		log.Printf("ui: remove cache dir %s: %v", cacheDir, err)
+	episodeDir := filepath.Join(h.cfg.Storage.CacheDir, "episodes", id)
+	if err := os.RemoveAll(episodeDir); err != nil {
+		log.Printf("ui: remove episode cache dir %s: %v", episodeDir, err)
+	}
+	feedXML := filepath.Join(h.cfg.Storage.CacheDir, "feeds", id+".rss")
+	if err := os.Remove(feedXML); err != nil && !errors.Is(err, os.ErrNotExist) {
+		log.Printf("ui: remove feed xml cache %s: %v", feedXML, err)
 	}
 	h.renderFeedList(w, fmt.Sprintf("Deleted feed %q.", id), false)
 }

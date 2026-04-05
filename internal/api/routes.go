@@ -142,14 +142,27 @@ func (h *handler) listFeeds(w http.ResponseWriter, r *http.Request) {
 // deleteFeed handles DELETE /api/feeds/{id}
 func (h *handler) deleteFeed(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	err := h.db.DeleteFeed(id)
-	if errors.Is(err, db.ErrNotFound) {
-		http.Error(w, "feed not found", http.StatusNotFound)
-		return
-	}
-	if err != nil {
+	if inProgress, err := h.db.HasInProgressEpisodes(id); err != nil {
 		http.Error(w, "database error", http.StatusInternalServerError)
 		return
+	} else if inProgress {
+		http.Error(w, "feed has episodes currently being cached; retry shortly", http.StatusConflict)
+		return
+	}
+	if err := h.db.DeleteFeed(id); errors.Is(err, db.ErrNotFound) {
+		http.Error(w, "feed not found", http.StatusNotFound)
+		return
+	} else if err != nil {
+		http.Error(w, "database error", http.StatusInternalServerError)
+		return
+	}
+	episodeDir := filepath.Join(h.cfg.Storage.CacheDir, "episodes", id)
+	if err := os.RemoveAll(episodeDir); err != nil {
+		log.Printf("api: remove episode cache dir %s: %v", episodeDir, err)
+	}
+	feedXML := filepath.Join(h.cfg.Storage.CacheDir, "feeds", id+".rss")
+	if err := os.Remove(feedXML); err != nil && !errors.Is(err, os.ErrNotExist) {
+		log.Printf("api: remove feed xml cache %s: %v", feedXML, err)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

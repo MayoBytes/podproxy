@@ -63,6 +63,16 @@ func (db *DB) ListEpisodesByFeed(feedID string) ([]*Episode, error) {
 	return eps, rows.Err()
 }
 
+// HasInProgressEpisodes reports whether any episode for feedID is currently
+// being written to the cache.
+func (db *DB) HasInProgressEpisodes(feedID string) (bool, error) {
+	var count int
+	err := db.QueryRow(
+		`SELECT COUNT(*) FROM episodes WHERE feed_id = ? AND cache_status = 'in_progress'`,
+		feedID).Scan(&count)
+	return count > 0, err
+}
+
 func (db *DB) UpdateEpisodeCacheStatus(id, status string, cachedPath *string, sizeBytes int64, contentType string) error {
 	_, err := db.Exec(`
 		UPDATE episodes SET cache_status = ?, cached_path = ?, size_bytes = ?, content_type = ? WHERE id = ?`,

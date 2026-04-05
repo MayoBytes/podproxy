@@ -232,6 +232,21 @@ func TestDeleteFeed_RemovedFromList(t *testing.T) {
 	}
 }
 
+func TestDeleteFeed_InProgress_Returns409(t *testing.T) {
+	env := newAPITestEnv(t)
+	env.do("POST", "/api/feeds", `{"url":"`+env.rssSrv.URL+`"}`)
+	eps, _ := env.db.ListEpisodesByFeed("my-test-podcast")
+	if len(eps) == 0 {
+		t.Skip("no episodes in test feed")
+	}
+	env.db.UpdateEpisodeCacheStatus(eps[0].ID, "in_progress", nil, 0, "")
+
+	w := env.do("DELETE", "/api/feeds/my-test-podcast", "")
+	if w.Code != http.StatusConflict {
+		t.Errorf("want 409, got %d", w.Code)
+	}
+}
+
 func TestDeleteFeed_NotFound_Returns404(t *testing.T) {
 	env := newAPITestEnv(t)
 	w := env.do("DELETE", "/api/feeds/nonexistent", "")

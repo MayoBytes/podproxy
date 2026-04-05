@@ -242,6 +242,29 @@ func TestUIDeleteFeed_Success(t *testing.T) {
 	}
 }
 
+func TestUIDeleteFeed_InProgress_ShowsError(t *testing.T) {
+	env := newUITestEnv(t)
+	env.doForm("POST", "/ui/feeds/add", url.Values{"url": {env.rssSrv.URL}})
+	eps, _ := env.db.ListEpisodesByFeed("ui-test-podcast")
+	if len(eps) == 0 {
+		t.Skip("no episodes in test feed")
+	}
+	env.db.UpdateEpisodeCacheStatus(eps[0].ID, "in_progress", nil, 0, "")
+
+	w := env.do("DELETE", "/ui/feeds/ui-test-podcast")
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200 (rendered fragment), got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "alert-err") {
+		t.Error("delete with in-progress episode should render error alert")
+	}
+
+	// Feed should still exist in DB.
+	if _, err := env.db.GetFeed("ui-test-podcast"); errors.Is(err, db.ErrNotFound) {
+		t.Error("feed should not have been deleted")
+	}
+}
+
 func TestUIDeleteFeed_NotFound_ShowsError(t *testing.T) {
 	env := newUITestEnv(t)
 	w := env.do("DELETE", "/ui/feeds/nonexistent")
