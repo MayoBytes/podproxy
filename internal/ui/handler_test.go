@@ -305,70 +305,40 @@ func TestUIRefreshFeed_NotFound_ShowsError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// POST /ui/feeds/{id}/prefetch
+// POST /ui/feeds/{id}/toggle-autoprefetch
 // ---------------------------------------------------------------------------
 
-func TestUIPrefetchFeed_NotFound_ShowsError(t *testing.T) {
+func TestUIToggleAutoPrefetch_NotFound_ShowsError(t *testing.T) {
 	env := newUITestEnv(t)
-	w := env.doForm("POST", "/ui/feeds/nonexistent/prefetch", nil)
+	w := env.doForm("POST", "/ui/feeds/nonexistent/toggle-autoprefetch", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("want 200 (rendered fragment), got %d", w.Code)
 	}
 	if !strings.Contains(w.Body.String(), "alert-err") {
-		t.Error("prefetching non-existent feed should render error alert")
+		t.Error("toggling non-existent feed should render error alert")
 	}
 }
 
-func TestUIPrefetchFeed_NilPrefetcher_ShowsError(t *testing.T) {
-	env := newUITestEnv(t) // prefetcher is nil
+func TestUIToggleAutoPrefetch_EnablesThenDisables(t *testing.T) {
+	env := newUITestEnv(t)
 	env.doForm("POST", "/ui/feeds/add", url.Values{"url": {env.rssSrv.URL}})
 
-	w := env.doForm("POST", "/ui/feeds/ui-test-podcast/prefetch", nil)
+	// First toggle: off → on
+	w := env.doForm("POST", "/ui/feeds/ui-test-podcast/toggle-autoprefetch", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), "alert-err") {
-		t.Error("nil prefetcher should render error alert")
-	}
-}
-
-func TestUIPrefetchFeed_Success(t *testing.T) {
-	database, err := db.Open(t.TempDir())
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { database.Close() })
-
-	rssSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/rss+xml")
-		w.Write([]byte(uiTestRSS))
-	}))
-	t.Cleanup(rssSrv.Close)
-
-	cfg := &config.Config{
-		Server:   config.ServerConfig{BaseURL: "http://proxy.local"},
-		Storage:  config.StorageConfig{CacheDir: t.TempDir()},
-		Defaults: config.DefaultsConfig{RefreshIntervalMinutes: 60, PrefetchConcurrency: 1},
+	if !strings.Contains(w.Body.String(), "enabled") {
+		t.Error("first toggle should report enabled")
 	}
 
-	prefetcher := feed.NewPrefetcher(database, cfg)
-	t.Cleanup(prefetcher.Stop)
-
-	mux := http.NewServeMux()
-	ui.RegisterRoutes(mux, database, feed.NewFetcher(cfg), prefetcher, cfg)
-
-	env := &uiTestEnv{db: database, mux: mux, cfg: cfg, rssSrv: rssSrv}
-	env.doForm("POST", "/ui/feeds/add", url.Values{"url": {rssSrv.URL}})
-
-	w := env.doForm("POST", "/ui/feeds/ui-test-podcast/prefetch", nil)
+	// Second toggle: on → off
+	w = env.doForm("POST", "/ui/feeds/ui-test-podcast/toggle-autoprefetch", nil)
 	if w.Code != http.StatusOK {
-		t.Fatalf("want 200, got %d\nbody: %s", w.Code, w.Body.String())
+		t.Fatalf("want 200, got %d", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), "alert-ok") {
-		t.Error("prefetch success should render success alert")
-	}
-	if !strings.Contains(w.Body.String(), "Queued") {
-		t.Error("prefetch success should mention queuing")
+	if !strings.Contains(w.Body.String(), "disabled") {
+		t.Error("second toggle should report disabled")
 	}
 }
 
