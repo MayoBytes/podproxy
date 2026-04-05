@@ -159,11 +159,25 @@
     document.addEventListener('click', function(e) {
       var btn = e.target.closest('.copy-btn');
       if (!btn) return;
-      navigator.clipboard.writeText(btn.dataset.url).then(function() {
-        var orig = btn.textContent;
+      var url = btn.dataset.url;
+      var orig = btn.textContent;
+      function confirm() {
         btn.textContent = 'Copied!';
         setTimeout(function() { btn.textContent = orig; }, 1500);
-      });
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(url).then(confirm);
+      } else {
+        var ta = document.createElement('textarea');
+        ta.value = url;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        try { document.execCommand('copy'); confirm(); } catch(err) {}
+        document.body.removeChild(ta);
+      }
     });
   </script>
 </body>
