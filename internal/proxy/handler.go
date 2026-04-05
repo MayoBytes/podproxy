@@ -289,15 +289,34 @@ func (h *handler) writeThroughFetch(w http.ResponseWriter, r *http.Request, ep *
 
 	// TeeReader: reading from tee copies resp.Body to w (client); cacheBody writes
 	// each chunk from the same read into the cache file simultaneously.
-	if err := h.cacheBody(ep, cachePath, contentType, io.TeeReader(resp.Body, w)); err != nil {
-		if r.Context().Err() != nil {
-			// Normal client disconnect — reset so next request retries.
+	// Track write errors to w separately: if the client closes the connection,
+	// w.Write will fail before r.Context() is cancelled (there is a race between
+	// the write error and the context cancellation propagating), so we check both.
+	cw := &clientWriter{ResponseWriter: w}
+	if err := h.cacheBody(ep, cachePath, contentType, io.TeeReader(resp.Body, cw)); err != nil {
+		if r.Context().Err() != nil || cw.wroteErr {
+			// Client disconnected — reset so the next request retries.
 			_ = h.db.UpdateEpisodeCacheStatus(ep.ID, "none", nil, 0, "")
 		} else {
 			log.Printf("cache episode %s: %v", ep.ID, err)
 			_ = h.db.UpdateEpisodeCacheStatus(ep.ID, "failed", nil, 0, "")
 		}
 	}
+}
+
+// clientWriter wraps http.ResponseWriter and records whether any Write call
+// returned an error, indicating a client-side disconnect.
+type clientWriter struct {
+	http.ResponseWriter
+	wroteErr bool
+}
+
+func (cw *clientWriter) Write(p []byte) (int, error) {
+	n, err := cw.ResponseWriter.Write(p)
+	if err != nil {
+		cw.wroteErr = true
+	}
+	return n, err
 }
 
 // backgroundFetch downloads the full episode to disk without streaming to any

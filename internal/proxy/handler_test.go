@@ -1,12 +1,14 @@
 package proxy_test
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -492,5 +494,89 @@ func TestServeEpisode_CachedFileMissing_ResetsAndProxies(t *testing.T) {
 	}
 	if w.Body.String() != originContent {
 		t.Errorf("body: want proxied content, got %q", w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Client disconnect during write-through caching
+// ---------------------------------------------------------------------------
+
+// failingResponseWriter simulates a client that closes the connection
+// mid-stream: Write always returns an error, as if the socket is broken.
+type failingResponseWriter struct {
+	header http.Header
+}
+
+func (f *failingResponseWriter) Header() http.Header        { return f.header }
+func (f *failingResponseWriter) WriteHeader(int)            {}
+func (f *failingResponseWriter) Write([]byte) (int, error)  { return 0, errors.New("broken pipe") }
+
+// TestServeEpisode_ClientDisconnect_ResetsStatusToNone checks that when a
+// client closes the connection during a write-through download, the episode
+// status is reset to "none" (retryable) rather than "failed" (permanent).
+// This guards against the timing race between a Write error on the response
+// writer and r.Context().Err() propagating from the HTTP server.
+func TestServeEpisode_ClientDisconnect_ResetsStatusToNone(t *testing.T) {
+	originSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "audio/mpeg")
+		w.Write([]byte("audio-bytes"))
+	}))
+	t.Cleanup(originSrv.Close)
+
+	env := newProxyTestEnv(t)
+	env.db.InsertFeed(&db.Feed{ID: "pod-dc", Title: "PodDC", OriginalURL: "https://x.com", RefreshIntervalMinutes: 60})
+	seedEpisode(t, env.db, "pod-dc", "disconnectep1", originSrv.URL+"/ep1.mp3")
+
+	req := httptest.NewRequest("GET", "/episodes/pod-dc/disconnectep1", nil)
+	env.mux.ServeHTTP(&failingResponseWriter{header: make(http.Header)}, req)
+
+	ep, err := env.db.GetEpisodeByURLID("pod-dc", "disconnectep1")
+	if err != nil {
+		t.Fatalf("GetEpisodeByURLID: %v", err)
+	}
+	if ep.CacheStatus != "none" {
+		t.Errorf("cache_status: want %q after client disconnect, got %q", "none", ep.CacheStatus)
+	}
+}
+
+// TestServeEpisode_ConcurrentClientDisconnects_AllResetToNone reproduces the
+// original bug: three episodes downloaded in parallel all end up "failed"
+// instead of "none" when the clients disconnect. Each episode must be
+// independently retryable after all three requests complete.
+func TestServeEpisode_ConcurrentClientDisconnects_AllResetToNone(t *testing.T) {
+	const n = 3
+	originSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "audio/mpeg")
+		w.Write([]byte("audio-bytes"))
+	}))
+	t.Cleanup(originSrv.Close)
+
+	env := newProxyTestEnv(t)
+	env.db.InsertFeed(&db.Feed{ID: "pod-conc", Title: "PodConc", OriginalURL: "https://x.com", RefreshIntervalMinutes: 60})
+
+	urlIDs := [n]string{"concep0001", "concep0002", "concep0003"}
+	for _, id := range urlIDs {
+		seedEpisode(t, env.db, "pod-conc", id, originSrv.URL+"/"+id+".mp3")
+	}
+
+	var wg sync.WaitGroup
+	for _, id := range urlIDs {
+		wg.Add(1)
+		go func(urlID string) {
+			defer wg.Done()
+			req := httptest.NewRequest("GET", "/episodes/pod-conc/"+urlID, nil)
+			env.mux.ServeHTTP(&failingResponseWriter{header: make(http.Header)}, req)
+		}(id)
+	}
+	wg.Wait()
+
+	for _, id := range urlIDs {
+		ep, err := env.db.GetEpisodeByURLID("pod-conc", id)
+		if err != nil {
+			t.Fatalf("GetEpisodeByURLID(%q): %v", id, err)
+		}
+		if ep.CacheStatus != "none" {
+			t.Errorf("episode %q: cache_status want %q, got %q", id, "none", ep.CacheStatus)
+		}
 	}
 }
