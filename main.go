@@ -40,7 +40,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux, database, fetcher, prefetcher, cfg)
-	proxy.RegisterRoutes(mux, database, fetcher, cfg)
+	proxy.RegisterRoutes(mux, database, fetcher, prefetcher, cfg)
 	ui.RegisterRoutes(mux, database, fetcher, prefetcher, cfg)
 
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {

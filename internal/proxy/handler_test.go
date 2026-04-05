@@ -70,7 +70,7 @@ func newProxyTestEnv(t *testing.T) *proxyTestEnv {
 	}
 
 	mux := http.NewServeMux()
-	proxy.RegisterRoutes(mux, database, feed.NewFetcher(cfg), cfg)
+	proxy.RegisterRoutes(mux, database, feed.NewFetcher(cfg), feed.NewPrefetcher(database, cfg), cfg)
 
 	return &proxyTestEnv{db: database, mux: mux, cfg: cfg, rssSrv: rssSrv}
 }

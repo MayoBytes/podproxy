@@ -23,16 +23,18 @@ import (
 type handler struct {
 	db         *db.DB
 	fetcher    *feed.Fetcher
+	prefetcher *feed.Prefetcher
 	cfg        *config.Config
 	client     *http.Client
 	fetchLocks sync.Map // key: episode.ID → struct{}; guards concurrent cache writes
 }
 
-func RegisterRoutes(mux *http.ServeMux, database *db.DB, fetcher *feed.Fetcher, cfg *config.Config) {
+func RegisterRoutes(mux *http.ServeMux, database *db.DB, fetcher *feed.Fetcher, prefetcher *feed.Prefetcher, cfg *config.Config) {
 	h := &handler{
-		db:      database,
-		fetcher: fetcher,
-		cfg:     cfg,
+		db:         database,
+		fetcher:    fetcher,
+		prefetcher: prefetcher,
+		cfg:        cfg,
 		// Shared client with a header timeout so a slow CDN can't hang a goroutine
 		// forever. WriteTimeout on the server is 0 (streaming), so we guard the
 		// outbound side here instead.
@@ -165,6 +167,13 @@ func (h *handler) serveEpisode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// In-progress: prefetcher is already downloading this episode — proxy directly
+	// rather than starting a competing write-through fetch.
+	if ep.CacheStatus == "in_progress" {
+		h.proxyDirect(w, r, ep)
+		return
+	}
+
 	// HEAD on an uncached episode: proxy headers from origin, no caching.
 	if r.Method == http.MethodHead {
 		h.proxyDirect(w, r, ep)
@@ -192,8 +201,13 @@ func (h *handler) serveEpisode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Write-through: stream to the client and write to disk simultaneously.
-	defer h.releaseFetchLock(ep.ID)
-	h.writeThroughFetch(w, r, ep)
+	// If the origin closes the connection early, enqueue the episode in the
+	// prefetcher so it is retried in the background with backoff.
+	needsRetry := h.writeThroughFetch(w, r, ep)
+	h.releaseFetchLock(ep.ID)
+	if needsRetry {
+		h.prefetcher.Enqueue(ep)
+	}
 }
 
 // serveCachedEpisode serves an episode from the local disk cache.
@@ -257,7 +271,9 @@ func (h *handler) proxyDirect(w http.ResponseWriter, r *http.Request, ep *db.Epi
 
 // writeThroughFetch fetches from origin, streams to the client, and writes to
 // disk simultaneously via io.TeeReader. On success the episode is marked cached.
-func (h *handler) writeThroughFetch(w http.ResponseWriter, r *http.Request, ep *db.Episode) {
+// Returns true if the origin closed the connection early and the episode should
+// be re-queued in the prefetcher for a background retry.
+func (h *handler) writeThroughFetch(w http.ResponseWriter, r *http.Request, ep *db.Episode) (needsRetry bool) {
 	cachePath := h.episodeCachePath(ep)
 
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, ep.OriginalURL, nil)
@@ -308,10 +324,13 @@ func (h *handler) writeThroughFetch(w http.ResponseWriter, r *http.Request, ep *
 			// Client disconnected — reset so the next request retries.
 			_ = h.db.UpdateEpisodeCacheStatus(ep.ID, "none", nil, 0, "")
 		} else {
-			log.Printf("cache episode %s: %v", ep.ID, err)
-			_ = h.db.UpdateEpisodeCacheStatus(ep.ID, "failed", nil, 0, "")
+			// Origin closed the connection early (e.g. CDN rate-limiting concurrent
+			// streams). Reset to none and signal the caller to enqueue a background retry.
+			_ = h.db.UpdateEpisodeCacheStatus(ep.ID, "none", nil, 0, "")
+			return true
 		}
 	}
+	return false
 }
 
 // clientWriter wraps http.ResponseWriter and records whether any Write call
