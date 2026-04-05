@@ -19,16 +19,6 @@
 
 {{template "feed-list" .}}
 
-<script>
-document.addEventListener('click', function(e) {
-  var btn = e.target.closest('.copy-btn');
-  if (!btn) return;
-  navigator.clipboard.writeText(btn.dataset.url).then(function() {
-    btn.textContent = 'Copied!';
-    setTimeout(function() { btn.textContent = 'Copy'; }, 1500);
-  });
-});
-</script>
 {{end}}
 
 {{define "feed-list"}}

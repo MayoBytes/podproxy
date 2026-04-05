@@ -4,35 +4,65 @@
 <h1>{{.Feed.Title}}</h1>
 
 <p class="feed-meta">
-  Proxy URL (add to your podcast app): <code>{{.ProxyURL}}</code>
+  Proxy URL (add to your podcast app):
+  <span class="proxy-url-row">
+    <code class="proxy-url" title="{{.ProxyURL}}">{{.ProxyURL}}</code>
+    <button class="btn btn-sm btn-secondary copy-btn" data-url="{{.ProxyURL}}">Copy</button>
+  </span>
 </p>
 
-<div class="card">
-  <table>
-    <thead>
-      <tr>
-        <th>Episode</th>
-        <th>Published</th>
-        <th>Status</th>
-        <th>Size</th>
-        <th>Duration</th>
-      </tr>
-    </thead>
-    <tbody>
-      {{if .Episodes}}
-        {{range .Episodes}}
+{{template "episode-list" .}}
+{{end}}
+
+{{define "episode-list"}}
+<div id="episode-list">
+  {{if .Message}}
+  <div class="alert {{if .IsError}}alert-err{{else}}alert-ok{{end}}">{{.Message}}</div>
+  {{end}}
+
+  <div class="card">
+    <table>
+      <thead>
         <tr>
-          <td>{{.Title}}</td>
-          <td>{{humanTime .PubDate}}</td>
-          <td><span class="badge {{cacheClass .CacheStatus}}">{{.CacheStatus}}</span></td>
-          <td>{{humanSize .SizeBytes}}</td>
-          <td>{{humanDuration .DurationSec}}</td>
+          <th>Episode</th>
+          <th>Published</th>
+          <th>Status</th>
+          <th>Size</th>
+          <th>Duration</th>
+          <th>Actions</th>
         </tr>
+      </thead>
+      <tbody>
+        {{if .Episodes}}
+          {{range .Episodes}}
+          <tr>
+            <td>{{.Title}}</td>
+            <td>{{humanTime .PubDate}}</td>
+            <td><span class="badge {{cacheClass .CacheStatus}}">{{.CacheStatus}}</span></td>
+            <td>{{humanSize .SizeBytes}}</td>
+            <td>{{humanDuration .DurationSec}}</td>
+            <td>
+              {{if or (eq .CacheStatus "none") (eq .CacheStatus "failed")}}
+              <button class="btn btn-sm btn-secondary"
+                      hx-post="/ui/feeds/{{$.Feed.ID}}/episodes/{{.URLID}}/cache"
+                      hx-target="#episode-list"
+                      hx-swap="outerHTML">Cache</button>
+              {{end}}
+              {{if eq .CacheStatus "cached"}}
+              <button class="btn btn-sm btn-danger"
+                      hx-delete="/ui/feeds/{{$.Feed.ID}}/episodes/{{.URLID}}"
+                      hx-target="#episode-list"
+                      hx-swap="outerHTML"
+                      hx-confirm="Delete cached file for &quot;{{.Title}}&quot;?">Delete</button>
+              {{end}}
+            </td>
+          </tr>
+          {{end}}
+        {{else}}
+          <tr class="empty-row"><td colspan="6">No episodes found.</td></tr>
         {{end}}
-      {{else}}
-        <tr class="empty-row"><td colspan="5">No episodes found.</td></tr>
-      {{end}}
-    </tbody>
-  </table>
+      </tbody>
+    </table>
+  </div>
 </div>
 {{end}}

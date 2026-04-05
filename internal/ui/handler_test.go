@@ -1,9 +1,11 @@
 package ui_test
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 
@@ -344,5 +346,164 @@ func TestUIPrefetchFeed_Success(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "Queued") {
 		t.Error("prefetch success should mention queuing")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// POST /ui/feeds/{id}/episodes/{epid}/cache
+// ---------------------------------------------------------------------------
+
+func TestUICacheEpisode_NotFound_ShowsError(t *testing.T) {
+	env := newUITestEnv(t)
+	env.doForm("POST", "/ui/feeds/add", url.Values{"url": {env.rssSrv.URL}})
+
+	w := env.do("POST", "/ui/feeds/ui-test-podcast/episodes/nonexistent/cache")
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200 (rendered fragment), got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "alert-err") {
+		t.Error("unknown episode should render error alert")
+	}
+}
+
+func TestUICacheEpisode_AlreadyCached_ShowsMessage(t *testing.T) {
+	env := newUITestEnv(t)
+	env.doForm("POST", "/ui/feeds/add", url.Values{"url": {env.rssSrv.URL}})
+
+	eps, err := env.db.ListEpisodesByFeed("ui-test-podcast")
+	if err != nil || len(eps) == 0 {
+		t.Fatalf("setup: ListEpisodesByFeed: %v (count=%d)", err, len(eps))
+	}
+	cachedPath := "/some/path"
+	if err := env.db.UpdateEpisodeCacheStatus(eps[0].ID, "cached", &cachedPath, 1234, "audio/mpeg"); err != nil {
+		t.Fatalf("setup: UpdateEpisodeCacheStatus: %v", err)
+	}
+
+	w := env.do("POST", "/ui/feeds/ui-test-podcast/episodes/"+eps[0].URLID+"/cache")
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200 (rendered fragment), got %d", w.Code)
+	}
+	body := w.Body.String()
+	// Should be informational (not an error) and not queue the episode.
+	if strings.Contains(body, "alert-err") {
+		t.Error("already-cached episode should not render an error alert")
+	}
+	if !strings.Contains(body, "already cached") {
+		t.Error("response should mention episode is already cached")
+	}
+}
+
+func TestUICacheEpisode_InProgress_ShowsError(t *testing.T) {
+	env := newUITestEnv(t)
+	env.doForm("POST", "/ui/feeds/add", url.Values{"url": {env.rssSrv.URL}})
+
+	eps, err := env.db.ListEpisodesByFeed("ui-test-podcast")
+	if err != nil || len(eps) == 0 {
+		t.Fatalf("setup: ListEpisodesByFeed: %v (count=%d)", err, len(eps))
+	}
+	if err := env.db.UpdateEpisodeCacheStatus(eps[0].ID, "in_progress", nil, 0, ""); err != nil {
+		t.Fatalf("setup: UpdateEpisodeCacheStatus: %v", err)
+	}
+
+	w := env.do("POST", "/ui/feeds/ui-test-podcast/episodes/"+eps[0].URLID+"/cache")
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200 (rendered fragment), got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "alert-err") {
+		t.Error("in-progress episode should render error alert")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DELETE /ui/feeds/{id}/episodes/{epid}
+// ---------------------------------------------------------------------------
+
+func TestUIDeleteEpisodeCache_NotFound_ShowsError(t *testing.T) {
+	env := newUITestEnv(t)
+	env.doForm("POST", "/ui/feeds/add", url.Values{"url": {env.rssSrv.URL}})
+
+	w := env.do("DELETE", "/ui/feeds/ui-test-podcast/episodes/nonexistent")
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200 (rendered fragment), got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "alert-err") {
+		t.Error("unknown episode should render error alert")
+	}
+}
+
+// TestUIDeleteEpisodeCache_InProgress_ShowsError verifies the bug fix: a
+// download in flight must not be deletable, as removing the file under an
+// active io.TeeReader write would corrupt the cache entry.
+func TestUIDeleteEpisodeCache_InProgress_ShowsError(t *testing.T) {
+	env := newUITestEnv(t)
+	env.doForm("POST", "/ui/feeds/add", url.Values{"url": {env.rssSrv.URL}})
+
+	eps, err := env.db.ListEpisodesByFeed("ui-test-podcast")
+	if err != nil || len(eps) == 0 {
+		t.Fatalf("setup: ListEpisodesByFeed: %v (count=%d)", err, len(eps))
+	}
+	if err := env.db.UpdateEpisodeCacheStatus(eps[0].ID, "in_progress", nil, 0, ""); err != nil {
+		t.Fatalf("setup: UpdateEpisodeCacheStatus: %v", err)
+	}
+
+	w := env.do("DELETE", "/ui/feeds/ui-test-podcast/episodes/"+eps[0].URLID)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200 (rendered fragment), got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "alert-err") {
+		t.Error("deleting an in-progress episode should render error alert")
+	}
+
+	// Status must be unchanged in the DB.
+	updated, err := env.db.GetEpisodeByURLID("ui-test-podcast", eps[0].URLID)
+	if err != nil {
+		t.Fatalf("GetEpisodeByURLID after rejected delete: %v", err)
+	}
+	if updated.CacheStatus != "in_progress" {
+		t.Errorf("cache status should still be in_progress, got %q", updated.CacheStatus)
+	}
+}
+
+func TestUIDeleteEpisodeCache_Cached_DeletesFileAndResetsStatus(t *testing.T) {
+	env := newUITestEnv(t)
+	env.doForm("POST", "/ui/feeds/add", url.Values{"url": {env.rssSrv.URL}})
+
+	eps, err := env.db.ListEpisodesByFeed("ui-test-podcast")
+	if err != nil || len(eps) == 0 {
+		t.Fatalf("setup: ListEpisodesByFeed: %v (count=%d)", err, len(eps))
+	}
+
+	// Create a real file to simulate a cached episode.
+	f, err := os.CreateTemp(t.TempDir(), "ep-*.mp3")
+	if err != nil {
+		t.Fatalf("setup: create temp file: %v", err)
+	}
+	cachedPath := f.Name()
+	f.Close()
+
+	if err := env.db.UpdateEpisodeCacheStatus(eps[0].ID, "cached", &cachedPath, 999, "audio/mpeg"); err != nil {
+		t.Fatalf("setup: UpdateEpisodeCacheStatus: %v", err)
+	}
+
+	w := env.do("DELETE", "/ui/feeds/ui-test-podcast/episodes/"+eps[0].URLID)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d\nbody: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "alert-ok") {
+		t.Error("successful delete should render success alert")
+	}
+
+	// File must be gone.
+	if _, err := os.Stat(cachedPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("cached file should have been deleted, got stat err: %v", err)
+	}
+
+	// DB status must be reset to none.
+	updated, err := env.db.GetEpisodeByURLID("ui-test-podcast", eps[0].URLID)
+	if err != nil {
+		t.Fatalf("GetEpisodeByURLID after delete: %v", err)
+	}
+	if updated.CacheStatus != "none" {
+		t.Errorf("cache status should be none after delete, got %q", updated.CacheStatus)
 	}
 }

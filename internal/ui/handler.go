@@ -53,6 +53,8 @@ func RegisterRoutes(mux *http.ServeMux, database *db.DB, fetcher *feed.Fetcher, 
 	mux.HandleFunc("DELETE /ui/feeds/{id}", h.deleteFeed)
 	mux.HandleFunc("POST /ui/feeds/{id}/refresh", h.refreshFeed)
 	mux.HandleFunc("POST /ui/feeds/{id}/prefetch", h.prefetchFeed)
+	mux.HandleFunc("POST /ui/feeds/{id}/episodes/{epid}/cache", h.cacheEpisode)
+	mux.HandleFunc("DELETE /ui/feeds/{id}/episodes/{epid}", h.deleteEpisodeCache)
 }
 
 type uiHandler struct {
@@ -96,11 +98,6 @@ func (h *uiHandler) episodesPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	type episodesPageData struct {
-		Feed     *db.Feed
-		Episodes []*db.Episode
-		ProxyURL string
-	}
 	data := episodesPageData{
 		Feed:     f,
 		Episodes: eps,
@@ -237,6 +234,102 @@ func (h *uiHandler) prefetchFeed(w http.ResponseWriter, r *http.Request) {
 	h.renderFeedList(w, fmt.Sprintf("Queued %q for prefetch.", id), false)
 }
 
+func (h *uiHandler) cacheEpisode(w http.ResponseWriter, r *http.Request) {
+	feedID := r.PathValue("id")
+	epURLID := r.PathValue("epid")
+
+	ep, err := h.db.GetEpisodeByURLID(feedID, epURLID)
+	if errors.Is(err, db.ErrNotFound) {
+		h.renderEpisodeList(w, feedID, "Episode not found.", true)
+		return
+	}
+	if err != nil {
+		h.renderEpisodeList(w, feedID, "Database error.", true)
+		return
+	}
+
+	if ep.CacheStatus == "cached" {
+		h.renderEpisodeList(w, feedID, fmt.Sprintf("%q is already cached.", ep.Title), false)
+		return
+	}
+	if ep.CacheStatus == "in_progress" {
+		h.renderEpisodeList(w, feedID, "Episode is currently being downloaded.", true)
+		return
+	}
+
+	if h.prefetcher == nil {
+		h.renderEpisodeList(w, feedID, "Prefetcher not available.", true)
+		return
+	}
+	if !h.prefetcher.Enqueue(ep) {
+		h.renderEpisodeList(w, feedID, "Cache queue is full, try again shortly.", true)
+		return
+	}
+	h.renderEpisodeList(w, feedID, fmt.Sprintf("Queued %q for caching.", ep.Title), false)
+}
+
+func (h *uiHandler) deleteEpisodeCache(w http.ResponseWriter, r *http.Request) {
+	feedID := r.PathValue("id")
+	epURLID := r.PathValue("epid")
+
+	ep, err := h.db.GetEpisodeByURLID(feedID, epURLID)
+	if errors.Is(err, db.ErrNotFound) {
+		h.renderEpisodeList(w, feedID, "Episode not found.", true)
+		return
+	}
+	if err != nil {
+		h.renderEpisodeList(w, feedID, "Database error.", true)
+		return
+	}
+
+	if ep.CacheStatus == "in_progress" {
+		h.renderEpisodeList(w, feedID, "Cannot delete: download in progress.", true)
+		return
+	}
+
+	if ep.CachedPath != "" {
+		if err := os.Remove(ep.CachedPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Printf("ui: remove cached episode %s: %v", ep.ID, err)
+			h.renderEpisodeList(w, feedID, "Failed to delete cached file.", true)
+			return
+		}
+	}
+	if err := h.db.UpdateEpisodeCacheStatus(ep.ID, "none", nil, 0, ""); err != nil {
+		h.renderEpisodeList(w, feedID, "Failed to update episode status.", true)
+		return
+	}
+	h.renderEpisodeList(w, feedID, fmt.Sprintf("Deleted cached file for %q.", ep.Title), false)
+}
+
+// renderEpisodeList writes only the #episode-list fragment (HTMX target).
+func (h *uiHandler) renderEpisodeList(w http.ResponseWriter, feedID, message string, isError bool) {
+	f, err := h.db.GetFeed(feedID)
+	if errors.Is(err, db.ErrNotFound) {
+		http.Error(w, "feed not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		http.Error(w, "database error", http.StatusInternalServerError)
+		return
+	}
+	eps, err := h.db.ListEpisodesByFeed(feedID)
+	if err != nil {
+		http.Error(w, "database error", http.StatusInternalServerError)
+		return
+	}
+	data := &episodesPageData{
+		Feed:     f,
+		Episodes: eps,
+		ProxyURL: fmt.Sprintf("%s/feeds/%s.rss", h.cfg.Server.BaseURL, f.ID),
+		Message:  message,
+		IsError:  isError,
+	}
+	w.Header().Set("Content-Type", "text/html")
+	if err := episodesTmpl.ExecuteTemplate(w, "episode-list", data); err != nil {
+		log.Printf("ui: render episode-list fragment: %v", err)
+	}
+}
+
 // renderFeedList writes only the #feed-list fragment (HTMX target).
 func (h *uiHandler) renderFeedList(w http.ResponseWriter, message string, isError bool) {
 	data, err := h.buildFeedsData(message)
@@ -260,6 +353,14 @@ type feedsPageData struct {
 	Message string
 	IsError bool
 	BaseURL string
+}
+
+type episodesPageData struct {
+	Feed     *db.Feed
+	Episodes []*db.Episode
+	ProxyURL string
+	Message  string
+	IsError  bool
 }
 
 func (h *uiHandler) buildFeedsData(message string) (*feedsPageData, error) {

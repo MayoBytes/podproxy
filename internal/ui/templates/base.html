@@ -5,15 +5,62 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>PodProxy</title>
+  <script>
+    (function() {
+      var saved = localStorage.getItem('theme');
+      var theme = saved || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      document.documentElement.setAttribute('data-theme', theme);
+    })();
+  </script>
   <script src="https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: system-ui, -apple-system, sans-serif; background: #f5f5f5; color: #1a1a1a; line-height: 1.5; }
+
+    :root {
+      --bg: #f5f5f5;
+      --surface: #fff;
+      --surface-muted: #f6f8fa;
+      --border: #d0d7de;
+      --border-muted: #f0f0f0;
+      --text: #1a1a1a;
+      --text-muted: #57606a;
+      --text-link: #0969da;
+      --code-bg: #eaeef2;
+      --input-focus: rgba(9,105,218,0.12);
+      --btn-sec-bg: #f6f8fa;
+      --btn-sec-text: #24292f;
+      --btn-sec-hover: #eef1f4;
+    }
+    [data-theme="dark"] {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --surface-muted: #21262d;
+      --border: #30363d;
+      --border-muted: #21262d;
+      --text: #e6edf3;
+      --text-muted: #8b949e;
+      --text-link: #58a6ff;
+      --code-bg: #21262d;
+      --input-focus: rgba(88,166,255,0.12);
+      --btn-sec-bg: #21262d;
+      --btn-sec-text: #c9d1d9;
+      --btn-sec-hover: #292e36;
+    }
+
+    body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); line-height: 1.5; }
 
     /* Header */
     header { background: #1c2333; color: #e6edf3; padding: 0.9rem 1.5rem; display: flex; align-items: center; gap: 1rem; }
     header a { color: #e6edf3; text-decoration: none; font-size: 1.15rem; font-weight: 700; letter-spacing: -0.3px; }
     header small { color: #8b949e; font-size: 0.8rem; }
+
+    /* Theme toggle button (lives in dark header, so hardcoded colors) */
+    .theme-toggle { margin-left: auto; padding: 0.3rem 0.65rem; border: 1px solid #444d58; border-radius: 6px; background: transparent; color: #e6edf3; cursor: pointer; font-size: 0.8rem; font-weight: 500; line-height: 1.4; transition: background 0.1s; }
+    .theme-toggle:hover { background: rgba(255,255,255,0.1); }
+    /* Show correct label immediately from first paint — data-theme is set in <head> */
+    .theme-toggle .label-light { display: none; }
+    [data-theme="dark"] .theme-toggle .label-dark { display: none; }
+    [data-theme="dark"] .theme-toggle .label-light { display: inline; }
 
     /* Layout */
     main { max-width: 1100px; margin: 2rem auto; padding: 0 1.25rem; }
@@ -21,44 +68,44 @@
     /* Typography */
     h1 { font-size: 1.35rem; font-weight: 600; margin-bottom: 1.25rem; }
     h2 { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.75rem; }
-    a { color: #0969da; text-decoration: none; }
+    a { color: var(--text-link); text-decoration: none; }
     a:hover { text-decoration: underline; }
 
     /* Card */
-    .card { background: #fff; border: 1px solid #d0d7de; border-radius: 6px; overflow: hidden; }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
     .card + .card { margin-top: 1rem; }
 
     /* Add-feed form */
     .add-form { padding: 1rem 1.25rem; }
-    .add-form h2 { margin-bottom: 0.6rem; font-size: 0.9rem; font-weight: 600; color: #57606a; text-transform: uppercase; letter-spacing: 0.04em; }
+    .add-form h2 { margin-bottom: 0.6rem; font-size: 0.9rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
     .form-row { display: flex; gap: 0.5rem; }
-    .form-row input[type=text] { flex: 1; padding: 0.45rem 0.75rem; border: 1px solid #d0d7de; border-radius: 6px; font-size: 0.9rem; min-width: 0; }
-    .form-row input[type=text]:focus { outline: none; border-color: #0969da; box-shadow: 0 0 0 3px rgba(9,105,218,0.12); }
+    .form-row input[type=text] { flex: 1; padding: 0.45rem 0.75rem; border: 1px solid var(--border); border-radius: 6px; font-size: 0.9rem; min-width: 0; background: var(--surface); color: var(--text); }
+    .form-row input[type=text]:focus { outline: none; border-color: var(--text-link); box-shadow: 0 0 0 3px var(--input-focus); }
 
     /* Buttons */
     .btn { padding: 0.45rem 0.9rem; border: 1px solid transparent; border-radius: 6px; cursor: pointer; font-size: 0.85rem; font-weight: 500; line-height: 1.4; transition: opacity 0.1s; }
     .btn:disabled { opacity: 0.6; cursor: default; }
     .btn-primary { background: #0969da; color: #fff; border-color: #0969da; }
     .btn-primary:hover { background: #0860ca; }
-    .btn-secondary { background: #f6f8fa; color: #24292f; border-color: #d0d7de; }
-    .btn-secondary:hover { background: #eef1f4; }
+    .btn-secondary { background: var(--btn-sec-bg); color: var(--btn-sec-text); border-color: var(--border); }
+    .btn-secondary:hover { background: var(--btn-sec-hover); }
     .btn-danger { background: #da3633; color: #fff; border-color: #da3633; }
     .btn-danger:hover { background: #c93130; }
     .btn-sm { padding: 0.25rem 0.55rem; font-size: 0.78rem; }
 
     /* Table */
     table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
-    thead th { padding: 0.6rem 1rem; text-align: left; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #57606a; background: #f6f8fa; border-bottom: 1px solid #d0d7de; }
-    tbody td { padding: 0.7rem 1rem; border-bottom: 1px solid #f0f0f0; vertical-align: middle; }
+    thead th { padding: 0.6rem 1rem; text-align: left; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); background: var(--surface-muted); border-bottom: 1px solid var(--border); }
+    tbody td { padding: 0.7rem 1rem; border-bottom: 1px solid var(--border-muted); vertical-align: middle; }
     tbody tr:last-child td { border-bottom: none; }
-    tbody tr:hover td { background: #f6f8fa; }
-    .empty-row td { text-align: center; padding: 2.5rem; color: #57606a; }
+    tbody tr:hover td { background: var(--surface-muted); }
+    .empty-row td { text-align: center; padding: 2.5rem; color: var(--text-muted); }
 
     /* Feed title cell */
     .feed-title { font-weight: 500; }
-    .feed-url { font-size: 0.75rem; color: #57606a; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+    .feed-url { font-size: 0.75rem; color: var(--text-muted); max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
     .proxy-url-row { display: flex; align-items: center; gap: 0.35rem; margin-top: 0.25rem; }
-    .proxy-url { font-size: 0.72rem; background: #eaeef2; padding: 0.15em 0.4em; border-radius: 4px; color: #1a1a1a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
+    .proxy-url { font-size: 0.72rem; background: var(--code-bg); padding: 0.15em 0.4em; border-radius: 4px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
 
     /* Action buttons in table */
     .actions { display: flex; gap: 0.35rem; flex-wrap: nowrap; }
@@ -68,7 +115,10 @@
     .badge-cached    { background: #dafbe1; color: #116329; }
     .badge-progress  { background: #fff8c5; color: #7d4e00; }
     .badge-failed    { background: #ffebe9; color: #a40e26; }
-    .badge-none      { background: #eaeef2; color: #57606a; }
+    .badge-none      { background: var(--code-bg); color: var(--text-muted); }
+    [data-theme="dark"] .badge-cached   { background: #1a4731; color: #3fb950; }
+    [data-theme="dark"] .badge-progress { background: #2d2208; color: #d29922; }
+    [data-theme="dark"] .badge-failed   { background: #3d1515; color: #f85149; }
 
     /* Alert messages */
     .alert { padding: 0.65rem 1rem; border-radius: 6px; font-size: 0.85rem; margin-bottom: 0.75rem; }
@@ -76,15 +126,15 @@
     .alert-err { background: #ffebe9; color: #a40e26; border: 1px solid #ffc1c0; }
 
     /* Back link */
-    .back { display: inline-block; color: #57606a; font-size: 0.85rem; margin-bottom: 1rem; }
-    .back:hover { color: #1a1a1a; }
+    .back { display: inline-block; color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1rem; }
+    .back:hover { color: var(--text); }
 
     /* Feed meta on episodes page */
-    .feed-meta { font-size: 0.85rem; color: #57606a; margin-bottom: 1.25rem; }
-    .feed-meta code { background: #eaeef2; padding: 0.15em 0.4em; border-radius: 4px; font-size: 0.82rem; color: #1a1a1a; }
+    .feed-meta { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1.25rem; }
+    .feed-meta code { background: var(--code-bg); padding: 0.15em 0.4em; border-radius: 4px; font-size: 0.82rem; color: var(--text); }
 
     /* HTMX loading indicator */
-    .htmx-indicator { opacity: 0; font-size: 0.8rem; color: #57606a; transition: opacity 200ms; }
+    .htmx-indicator { opacity: 0; font-size: 0.8rem; color: var(--text-muted); transition: opacity 200ms; }
     .htmx-request .htmx-indicator,
     .htmx-request.htmx-indicator { opacity: 1; }
   </style>
@@ -93,10 +143,29 @@
   <header>
     <a href="/ui">PodProxy</a>
     <small>self-hosted podcast cache</small>
+    <button class="theme-toggle" onclick="toggleTheme()"><span class="label-dark">Dark</span><span class="label-light">Light</span></button>
   </header>
   <main>
     {{block "body" .}}{{end}}
   </main>
+  <script>
+    function toggleTheme() {
+      var cur = document.documentElement.getAttribute('data-theme') || 'light';
+      var next = cur === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+    }
+
+    document.addEventListener('click', function(e) {
+      var btn = e.target.closest('.copy-btn');
+      if (!btn) return;
+      navigator.clipboard.writeText(btn.dataset.url).then(function() {
+        var orig = btn.textContent;
+        btn.textContent = 'Copied!';
+        setTimeout(function() { btn.textContent = orig; }, 1500);
+      });
+    });
+  </script>
 </body>
 </html>
 {{end}}
