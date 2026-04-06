@@ -42,27 +42,24 @@ dockers:
   - image_templates:
       - "ghcr.io/mayobytes/podproxy:{{ .Tag }}-amd64"
     use: buildx
-    dockerfile: deploy/Dockerfile
+    dockerfile: deploy/Dockerfile.goreleaser
     build_flag_templates:
       - "--platform=linux/amd64"
-      - "--build-arg=VERSION={{ .Version }}"
   - image_templates:
       - "ghcr.io/mayobytes/podproxy:{{ .Tag }}-arm64"
     use: buildx
     goarch: arm64
-    dockerfile: deploy/Dockerfile
+    dockerfile: deploy/Dockerfile.goreleaser
     build_flag_templates:
       - "--platform=linux/arm64"
-      - "--build-arg=VERSION={{ .Version }}"
   - image_templates:
       - "ghcr.io/mayobytes/podproxy:{{ .Tag }}-armv7"
     use: buildx
     goarch: arm
     goarm: "7"
-    dockerfile: deploy/Dockerfile
+    dockerfile: deploy/Dockerfile.goreleaser
     build_flag_templates:
       - "--platform=linux/arm/v7"
-      - "--build-arg=VERSION={{ .Version }}"
 
 docker_manifests:
   - name_template: "ghcr.io/mayobytes/podproxy:{{ .Tag }}"
