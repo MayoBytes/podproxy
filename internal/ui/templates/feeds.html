@@ -7,7 +7,8 @@
     <form hx-post="/ui/feeds/add"
           hx-target="#feed-list"
           hx-swap="outerHTML"
-          hx-indicator="#add-spinner">
+          hx-indicator="#add-spinner"
+          hx-on::after-request="if(event.detail.successful) this.reset()">
       <div class="form-row">
         <input type="text" name="url" placeholder="https://feeds.example.com/podcast.rss" required autocomplete="off">
         <button type="submit" class="btn btn-primary">Add</button>
