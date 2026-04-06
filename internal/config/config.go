@@ -83,7 +83,18 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
-// applyEnvOverrides overrides Port and BaseURL from environment variables if set.
+// applyEnvOverrides overrides config fields from environment variables if set.
+//
+// Supported variables:
+//
+//	PODPROXY_PORT                     – server.port
+//	PODPROXY_BASE_URL                 – server.base_url
+//	PODPROXY_REFRESH_INTERVAL_MINUTES – defaults.refresh_interval_minutes
+//	PODPROXY_AUTO_PREFETCH            – defaults.auto_prefetch (1/true/yes)
+//	PODPROXY_PREFETCH_MAX_AGE_DAYS    – defaults.prefetch_max_age_days
+//	PODPROXY_PREFETCH_CONCURRENCY     – defaults.prefetch_concurrency
+//	PODPROXY_MAX_BACKUPS              – backup.max_backups
+//	PODPROXY_BACKUP_INTERVAL_MINUTES  – backup.interval_minutes
 func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("PODPROXY_PORT"); v != "" {
 		if p, err := strconv.Atoi(v); err == nil {
@@ -92,6 +103,36 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("PODPROXY_BASE_URL"); v != "" {
 		cfg.Server.BaseURL = v
+	}
+	if v := os.Getenv("PODPROXY_REFRESH_INTERVAL_MINUTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Defaults.RefreshIntervalMinutes = n
+		}
+	}
+	if v := os.Getenv("PODPROXY_AUTO_PREFETCH"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.Defaults.AutoPrefetch = b
+		}
+	}
+	if v := os.Getenv("PODPROXY_PREFETCH_MAX_AGE_DAYS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Defaults.PrefetchMaxAgeDays = n
+		}
+	}
+	if v := os.Getenv("PODPROXY_PREFETCH_CONCURRENCY"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Defaults.PrefetchConcurrency = n
+		}
+	}
+	if v := os.Getenv("PODPROXY_MAX_BACKUPS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Backup.MaxBackups = n
+		}
+	}
+	if v := os.Getenv("PODPROXY_BACKUP_INTERVAL_MINUTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Backup.IntervalMinutes = n
+		}
 	}
 }
 

@@ -129,16 +129,21 @@ GET    /health
 | `server.base_url` | `PODPROXY_BASE_URL` | `http://localhost:8080` | Public URL (used in proxy URLs) |
 | `storage.cache_dir` | — | `./cache` | Episode audio cache directory |
 | `storage.data_dir` | — | `./data` | SQLite database directory |
-| `defaults.refresh_interval_minutes` | — | `60` | How often feeds are re-fetched |
-| `defaults.auto_prefetch` | — | `false` | Download new episodes automatically after each refresh |
-| `defaults.prefetch_max_age_days` | — | `30` | Skip prefetch for episodes older than this (0 = no limit) |
-| `defaults.prefetch_concurrency` | — | `2` | Simultaneous background download workers |
+| `defaults.refresh_interval_minutes` | `PODPROXY_REFRESH_INTERVAL_MINUTES` | `60` | How often feeds are re-fetched |
+| `defaults.auto_prefetch` | `PODPROXY_AUTO_PREFETCH` | `false` | Download new episodes automatically after each refresh |
+| `defaults.prefetch_max_age_days` | `PODPROXY_PREFETCH_MAX_AGE_DAYS` | `30` | Skip prefetch for episodes older than this (0 = no limit) |
+| `defaults.prefetch_concurrency` | `PODPROXY_PREFETCH_CONCURRENCY` | `2` | Simultaneous background download workers |
 | `backup.dir` | — | `{data_dir}/backups` | Directory for backup files |
-| `backup.max_backups` | — | `5` | Backups to keep; oldest pruned when exceeded (0 = unlimited) |
-| `backup.interval_minutes` | — | `0` | Scheduled backup interval in minutes (0 = disabled) |
+| `backup.max_backups` | `PODPROXY_MAX_BACKUPS` | `5` | Backups to keep; oldest pruned when exceeded (0 = unlimited) |
+| `backup.interval_minutes` | `PODPROXY_BACKUP_INTERVAL_MINUTES` | `0` | Scheduled backup interval in minutes (0 = disabled) |
 
-Environment variables take precedence over `config.yaml`. This is useful for Docker deployments where you want to set `base_url` without mounting a config file:
+Environment variables take precedence over `config.yaml`. This is useful for Docker deployments where you want to configure the server without mounting a config file:
 
 ```bash
-docker run -e PODPROXY_PORT=9090 -e PODPROXY_BASE_URL=http://192.168.1.100:9090 ...
+docker run \
+  -e PODPROXY_BASE_URL=http://192.168.1.100:8080 \
+  -e PODPROXY_AUTO_PREFETCH=true \
+  -e PODPROXY_PREFETCH_CONCURRENCY=4 \
+  -e PODPROXY_BACKUP_INTERVAL_MINUTES=60 \
+  ...
 ```

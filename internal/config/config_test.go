@@ -104,6 +104,38 @@ func TestLoad_InvalidYAML_ReturnsError(t *testing.T) {
 	}
 }
 
+func TestLoad_EnvOverrides(t *testing.T) {
+	t.Setenv("PODPROXY_REFRESH_INTERVAL_MINUTES", "15")
+	t.Setenv("PODPROXY_AUTO_PREFETCH", "true")
+	t.Setenv("PODPROXY_PREFETCH_MAX_AGE_DAYS", "7")
+	t.Setenv("PODPROXY_PREFETCH_CONCURRENCY", "4")
+	t.Setenv("PODPROXY_MAX_BACKUPS", "10")
+	t.Setenv("PODPROXY_BACKUP_INTERVAL_MINUTES", "60")
+
+	cfg, err := config.Load(filepath.Join(t.TempDir(), "notexist.yaml"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Defaults.RefreshIntervalMinutes != 15 {
+		t.Errorf("refresh_interval_minutes: want 15, got %d", cfg.Defaults.RefreshIntervalMinutes)
+	}
+	if !cfg.Defaults.AutoPrefetch {
+		t.Error("auto_prefetch: want true, got false")
+	}
+	if cfg.Defaults.PrefetchMaxAgeDays != 7 {
+		t.Errorf("prefetch_max_age_days: want 7, got %d", cfg.Defaults.PrefetchMaxAgeDays)
+	}
+	if cfg.Defaults.PrefetchConcurrency != 4 {
+		t.Errorf("prefetch_concurrency: want 4, got %d", cfg.Defaults.PrefetchConcurrency)
+	}
+	if cfg.Backup.MaxBackups != 10 {
+		t.Errorf("max_backups: want 10, got %d", cfg.Backup.MaxBackups)
+	}
+	if cfg.Backup.IntervalMinutes != 60 {
+		t.Errorf("interval_minutes: want 60, got %d", cfg.Backup.IntervalMinutes)
+	}
+}
+
 func TestAddr(t *testing.T) {
 	cfg := &config.Config{Server: config.ServerConfig{Port: 9000}}
 	if got := cfg.Addr(); got != ":9000" {
