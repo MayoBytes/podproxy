@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"podproxy/internal/backup"
 	"podproxy/internal/config"
 	"podproxy/internal/db"
 	"podproxy/internal/feed"
@@ -45,8 +46,8 @@ func init() {
 }
 
 // RegisterRoutes mounts the HTMX UI under /ui.
-func RegisterRoutes(mux *http.ServeMux, database *db.DB, fetcher *feed.Fetcher, prefetcher *feed.Prefetcher, cfg *config.Config) {
-	h := &uiHandler{db: database, fetcher: fetcher, prefetcher: prefetcher, cfg: cfg}
+func RegisterRoutes(mux *http.ServeMux, database *db.DB, fetcher *feed.Fetcher, prefetcher *feed.Prefetcher, cfg *config.Config, bm *backup.Manager) {
+	h := &uiHandler{db: database, fetcher: fetcher, prefetcher: prefetcher, cfg: cfg, backup: bm}
 	mux.HandleFunc("GET /ui", h.feedsPage)
 	mux.HandleFunc("GET /ui/feeds/{id}/episodes", h.episodesPage)
 	mux.HandleFunc("GET /ui/feeds/{id}/episode-list", h.episodeListFragment)
@@ -58,6 +59,8 @@ func RegisterRoutes(mux *http.ServeMux, database *db.DB, fetcher *feed.Fetcher, 
 	mux.HandleFunc("POST /ui/feeds/{id}/bulk-delete", h.bulkDeleteEpisodes)
 	mux.HandleFunc("POST /ui/feeds/{id}/episodes/{epid}/cache", h.cacheEpisode)
 	mux.HandleFunc("DELETE /ui/feeds/{id}/episodes/{epid}", h.deleteEpisodeCache)
+	mux.HandleFunc("POST /ui/backups", h.createBackupUI)
+	mux.HandleFunc("GET /ui/backups/{name}", h.downloadBackup)
 }
 
 type uiHandler struct {
@@ -65,6 +68,7 @@ type uiHandler struct {
 	fetcher    *feed.Fetcher
 	prefetcher *feed.Prefetcher
 	cfg        *config.Config
+	backup     *backup.Manager
 }
 
 // ---------------------------------------------------------------------------
@@ -479,11 +483,18 @@ func (h *uiHandler) renderFeedList(w http.ResponseWriter, message string, isErro
 // Data helpers
 // ---------------------------------------------------------------------------
 
+type backupSectionData struct {
+	Backups   []backup.BackupInfo
+	Message   string
+	IsError   bool
+}
+
 type feedsPageData struct {
 	Feeds   []*db.FeedWithStats
 	Message string
 	IsError bool
 	BaseURL string
+	Backup  backupSectionData
 }
 
 type episodesPageData struct {
@@ -500,11 +511,75 @@ func (h *uiHandler) buildFeedsData(message string) (*feedsPageData, error) {
 	if err != nil {
 		return nil, err
 	}
+	backups, _ := h.backup.ListBackups()
 	return &feedsPageData{
 		Feeds:   feeds,
 		Message: message,
 		BaseURL: h.cfg.Server.BaseURL,
+		Backup:  backupSectionData{Backups: backups},
 	}, nil
+}
+
+// renderBackupSection writes only the #backup-section fragment (HTMX target).
+func (h *uiHandler) renderBackupSection(w http.ResponseWriter, message string, isError bool) {
+	backups, err := h.backup.ListBackups()
+	if err != nil {
+		log.Printf("ui: list backups: %v", err)
+	}
+	data := backupSectionData{Backups: backups, Message: message, IsError: isError}
+	w.Header().Set("Content-Type", "text/html")
+	if err := feedsTmpl.ExecuteTemplate(w, "backup-section", data); err != nil {
+		log.Printf("ui: render backup-section fragment: %v", err)
+	}
+}
+
+// createBackupUI handles POST /ui/backups.
+func (h *uiHandler) createBackupUI(w http.ResponseWriter, r *http.Request) {
+	info, err := h.backup.CreateBackup()
+	if err != nil {
+		log.Printf("ui: create backup: %v", err)
+		h.renderBackupSection(w, fmt.Sprintf("Backup failed: %v", err), true)
+		return
+	}
+	log.Printf("ui: created backup %s (%d bytes)", info.Name, info.SizeBytes)
+	h.renderBackupSection(w, fmt.Sprintf("Created backup %s (%s).", info.Name, humanSize(info.SizeBytes)), false)
+}
+
+// downloadBackup handles GET /ui/backups/{name}.
+func (h *uiHandler) downloadBackup(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if strings.ContainsAny(name, "/\\") || !strings.HasSuffix(name, ".db") {
+		http.Error(w, "invalid backup name", http.StatusBadRequest)
+		return
+	}
+	dir := h.cfg.Backup.Dir
+	if dir == "" {
+		dir = filepath.Join(h.cfg.Storage.DataDir, "backups")
+	}
+	cleanDir := filepath.Clean(dir)
+	path := filepath.Join(cleanDir, name)
+	if !strings.HasPrefix(path, cleanDir+string(filepath.Separator)) {
+		http.Error(w, "invalid backup name", http.StatusBadRequest)
+		return
+	}
+	f, err := os.Open(path)
+	if os.IsNotExist(err) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, "could not open backup", http.StatusInternalServerError)
+		return
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		http.Error(w, "could not stat backup", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
+	w.Header().Set("Content-Type", "application/octet-stream")
+	http.ServeContent(w, r, name, fi.ModTime(), f)
 }
 
 // ---------------------------------------------------------------------------

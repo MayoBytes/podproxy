@@ -114,6 +114,8 @@ GET    /api/feeds
 DELETE /api/feeds/:id
 POST   /api/feeds/:id/refresh
 POST   /api/feeds/:id/prefetch
+POST   /api/backups
+GET    /api/backups
 GET    /health
 ```
 
@@ -131,6 +133,9 @@ GET    /health
 | `defaults.auto_prefetch` | — | `false` | Download new episodes automatically after each refresh |
 | `defaults.prefetch_max_age_days` | — | `30` | Skip prefetch for episodes older than this (0 = no limit) |
 | `defaults.prefetch_concurrency` | — | `2` | Simultaneous background download workers |
+| `backup.dir` | — | `{data_dir}/backups` | Directory for backup files |
+| `backup.max_backups` | — | `5` | Backups to keep; oldest pruned when exceeded (0 = unlimited) |
+| `backup.interval_minutes` | — | `0` | Scheduled backup interval in minutes (0 = disabled) |
 
 Environment variables take precedence over `config.yaml`. This is useful for Docker deployments where you want to set `base_url` without mounting a config file:
 

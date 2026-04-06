@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"podproxy/internal/backup"
 	"podproxy/internal/config"
 	"podproxy/internal/db"
 	"podproxy/internal/feed"
@@ -44,7 +45,7 @@ func newUITestEnvWithPrefetcher(t *testing.T) *uiTestEnv {
 	prefetcher := feed.NewPrefetcher(database, cfg)
 	t.Cleanup(prefetcher.Stop)
 	mux := http.NewServeMux()
-	ui.RegisterRoutes(mux, database, feed.NewFetcher(cfg), prefetcher, cfg)
+	ui.RegisterRoutes(mux, database, feed.NewFetcher(cfg), prefetcher, cfg, backup.New(database, cfg))
 	return &uiTestEnv{db: database, mux: mux, cfg: cfg, rssSrv: rssSrv}
 }
 
@@ -78,7 +79,7 @@ func newUITestEnv(t *testing.T) *uiTestEnv {
 		Defaults: config.DefaultsConfig{RefreshIntervalMinutes: 60},
 	}
 	mux := http.NewServeMux()
-	ui.RegisterRoutes(mux, database, feed.NewFetcher(cfg), nil, cfg)
+	ui.RegisterRoutes(mux, database, feed.NewFetcher(cfg), nil, cfg, backup.New(database, cfg))
 	return &uiTestEnv{db: database, mux: mux, cfg: cfg, rssSrv: rssSrv}
 }
 
@@ -758,6 +759,132 @@ func TestUIBulkDeleteEpisodes_SkipsNonCachedEpisodes(t *testing.T) {
 				t.Errorf("cache status should still be %q, got %q", status, updated.CacheStatus)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// POST /ui/backups  &  GET /ui/backups/{name}
+// ---------------------------------------------------------------------------
+
+// newUIBackupTestEnv creates a test env with a properly isolated backup dir.
+func newUIBackupTestEnv(t *testing.T) *uiTestEnv {
+	t.Helper()
+	database, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+	cfg := &config.Config{
+		Server:   config.ServerConfig{BaseURL: "http://proxy.local"},
+		Storage:  config.StorageConfig{DataDir: t.TempDir()},
+		Defaults: config.DefaultsConfig{RefreshIntervalMinutes: 60},
+		Backup:   config.BackupConfig{MaxBackups: 5},
+	}
+	mux := http.NewServeMux()
+	ui.RegisterRoutes(mux, database, feed.NewFetcher(cfg), nil, cfg, backup.New(database, cfg))
+	return &uiTestEnv{db: database, mux: mux, cfg: cfg}
+}
+
+func TestFeedsPage_ShowsBackupSection(t *testing.T) {
+	env := newUITestEnv(t)
+	w := env.do("GET", "/ui")
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "backup-section") {
+		t.Error("feeds page should contain backup-section")
+	}
+	if !strings.Contains(body, "Database Backups") {
+		t.Error("feeds page should contain backup section heading")
+	}
+	if !strings.Contains(body, "Create Backup") {
+		t.Error("feeds page should contain create backup button")
+	}
+}
+
+func TestUICreateBackup_Returns200AndShowsSuccessMessage(t *testing.T) {
+	env := newUIBackupTestEnv(t)
+
+	w := env.doForm("POST", "/ui/backups", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d\nbody: %s", w.Code, w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("Content-Type: want text/html, got %q", ct)
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "alert-err") {
+		t.Error("create backup should not render error alert")
+	}
+	if !strings.Contains(body, "Created backup") {
+		t.Errorf("response should confirm backup creation; got: %s", body)
+	}
+	if !strings.Contains(body, ".db") {
+		t.Errorf("response should include backup filename; got: %s", body)
+	}
+}
+
+func TestUICreateBackup_NewBackupAppearsOnFeedsPage(t *testing.T) {
+	env := newUIBackupTestEnv(t)
+
+	env.doForm("POST", "/ui/backups", nil)
+
+	w := env.do("GET", "/ui")
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), ".db") {
+		t.Error("feeds page should show the created backup filename")
+	}
+}
+
+func TestUIDownloadBackup_NotFound_Returns404(t *testing.T) {
+	env := newUIBackupTestEnv(t)
+	w := env.do("GET", "/ui/backups/nonexistent.db")
+	if w.Code != http.StatusNotFound {
+		t.Errorf("want 404, got %d", w.Code)
+	}
+}
+
+func TestUIDownloadBackup_InvalidExtension_Returns400(t *testing.T) {
+	env := newUIBackupTestEnv(t)
+	w := env.do("GET", "/ui/backups/backup.sql")
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("want 400, got %d", w.Code)
+	}
+}
+
+func TestUIDownloadBackup_Returns200WithFile(t *testing.T) {
+	env := newUIBackupTestEnv(t)
+
+	// Create a backup via the UI endpoint.
+	createW := env.doForm("POST", "/ui/backups", nil)
+	if createW.Code != http.StatusOK {
+		t.Fatalf("setup: create backup: want 200, got %d\nbody: %s", createW.Code, createW.Body.String())
+	}
+
+	// Resolve the backup name via a fresh manager reading the same dir.
+	bm := backup.New(env.db, env.cfg)
+	backups, err := bm.ListBackups()
+	if err != nil || len(backups) == 0 {
+		t.Fatalf("setup: ListBackups: %v (count=%d)", err, len(backups))
+	}
+	name := backups[0].Name
+
+	w := env.do("GET", "/ui/backups/"+name)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d\nbody: %s", w.Code, w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/octet-stream" {
+		t.Errorf("Content-Type: want application/octet-stream, got %q", ct)
+	}
+	cd := w.Header().Get("Content-Disposition")
+	if !strings.Contains(cd, name) {
+		t.Errorf("Content-Disposition should contain filename %q, got %q", name, cd)
+	}
+	if w.Body.Len() == 0 {
+		t.Error("response body should not be empty")
 	}
 }
 

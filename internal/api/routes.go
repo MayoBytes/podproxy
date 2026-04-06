@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"podproxy/internal/backup"
 	"podproxy/internal/config"
 	"podproxy/internal/db"
 	"podproxy/internal/feed"
@@ -21,10 +22,11 @@ type handler struct {
 	fetcher    *feed.Fetcher
 	prefetcher *feed.Prefetcher
 	cfg        *config.Config
+	backup     *backup.Manager
 }
 
-func RegisterRoutes(mux *http.ServeMux, database *db.DB, fetcher *feed.Fetcher, prefetcher *feed.Prefetcher, cfg *config.Config) {
-	h := &handler{db: database, fetcher: fetcher, prefetcher: prefetcher, cfg: cfg}
+func RegisterRoutes(mux *http.ServeMux, database *db.DB, fetcher *feed.Fetcher, prefetcher *feed.Prefetcher, cfg *config.Config, bm *backup.Manager) {
+	h := &handler{db: database, fetcher: fetcher, prefetcher: prefetcher, cfg: cfg, backup: bm}
 
 	mux.HandleFunc("POST /api/feeds", h.addFeed)
 	mux.HandleFunc("GET /api/feeds", h.listFeeds)
@@ -32,6 +34,9 @@ func RegisterRoutes(mux *http.ServeMux, database *db.DB, fetcher *feed.Fetcher, 
 	mux.HandleFunc("POST /api/feeds/{id}/refresh", h.refreshFeed)
 	mux.HandleFunc("POST /api/feeds/{id}/prefetch", h.prefetchFeed)
 	mux.HandleFunc("POST /api/feeds/{id}/bulk-cache", h.bulkCacheFeed)
+
+	mux.HandleFunc("POST /api/backups", h.createBackup)
+	mux.HandleFunc("GET /api/backups", h.listBackups)
 }
 
 // addFeed handles POST /api/feeds
@@ -302,6 +307,29 @@ func (h *handler) prefetchFeed(w http.ResponseWriter, r *http.Request) {
 	}
 	h.prefetcher.EnqueueFeedEpisodes(id)
 	writeJSON(w, http.StatusAccepted, map[string]string{"id": id, "status": "queued"})
+}
+
+// createBackup handles POST /api/backups
+func (h *handler) createBackup(w http.ResponseWriter, r *http.Request) {
+	info, err := h.backup.CreateBackup()
+	if err != nil {
+		log.Printf("api: create backup: %v", err)
+		http.Error(w, "backup failed", http.StatusInternalServerError)
+		return
+	}
+	log.Printf("api: created backup %s (%d bytes)", info.Name, info.SizeBytes)
+	writeJSON(w, http.StatusCreated, info)
+}
+
+// listBackups handles GET /api/backups
+func (h *handler) listBackups(w http.ResponseWriter, r *http.Request) {
+	backups, err := h.backup.ListBackups()
+	if err != nil {
+		log.Printf("api: list backups: %v", err)
+		http.Error(w, "could not list backups", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, backups)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

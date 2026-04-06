@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"podproxy/internal/api"
+	"podproxy/internal/backup"
 	"podproxy/internal/config"
 	"podproxy/internal/db"
 	"podproxy/internal/feed"
@@ -42,10 +43,13 @@ func main() {
 	poller := feed.NewPoller(database, fetcher, prefetcher)
 	poller.Start()
 
+	backupManager := backup.New(database, cfg)
+	backupManager.Start()
+
 	mux := http.NewServeMux()
-	api.RegisterRoutes(mux, database, fetcher, prefetcher, cfg)
+	api.RegisterRoutes(mux, database, fetcher, prefetcher, cfg, backupManager)
 	proxy.RegisterRoutes(mux, database, fetcher, prefetcher, cfg)
-	ui.RegisterRoutes(mux, database, fetcher, prefetcher, cfg)
+	ui.RegisterRoutes(mux, database, fetcher, prefetcher, cfg, backupManager)
 
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		stats, err := database.GetGlobalStats()
@@ -95,5 +99,6 @@ func main() {
 	}
 	poller.Stop()
 	prefetcher.Stop()
+	backupManager.Stop()
 	log.Println("stopped")
 }

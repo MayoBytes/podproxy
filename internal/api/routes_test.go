@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"podproxy/internal/api"
+	"podproxy/internal/backup"
 	"podproxy/internal/config"
 	"podproxy/internal/db"
 	"podproxy/internal/feed"
@@ -62,7 +63,7 @@ func newAPITestEnv(t *testing.T) *apiTestEnv {
 	}
 
 	mux := http.NewServeMux()
-	api.RegisterRoutes(mux, database, feed.NewFetcher(cfg), nil, cfg)
+	api.RegisterRoutes(mux, database, feed.NewFetcher(cfg), nil, cfg, backup.New(database, cfg))
 
 	return &apiTestEnv{db: database, mux: mux, cfg: cfg, rssSrv: rssSrv}
 }
@@ -360,7 +361,7 @@ func TestPrefetchFeed_Returns202(t *testing.T) {
 	t.Cleanup(prefetcher.Stop)
 
 	mux := http.NewServeMux()
-	api.RegisterRoutes(mux, database, feed.NewFetcher(cfg), prefetcher, cfg)
+	api.RegisterRoutes(mux, database, feed.NewFetcher(cfg), prefetcher, cfg, backup.New(database, cfg))
 
 	env := &apiTestEnv{db: database, mux: mux, cfg: cfg, rssSrv: rssSrv}
 	env.do("POST", "/api/feeds", `{"url":"`+rssSrv.URL+`"}`)
@@ -459,7 +460,7 @@ func TestBulkCacheFeed_Returns202WithCounts(t *testing.T) {
 	t.Cleanup(prefetcher.Stop)
 
 	mux := http.NewServeMux()
-	api.RegisterRoutes(mux, database, feed.NewFetcher(cfg), prefetcher, cfg)
+	api.RegisterRoutes(mux, database, feed.NewFetcher(cfg), prefetcher, cfg, backup.New(database, cfg))
 
 	env := &apiTestEnv{db: database, mux: mux, cfg: cfg, rssSrv: rssSrv}
 	env.do("POST", "/api/feeds", `{"url":"`+rssSrv.URL+`"}`)
@@ -488,6 +489,86 @@ func TestBulkCacheFeed_Returns202WithCounts(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// POST /api/backups  &  GET /api/backups
+// ---------------------------------------------------------------------------
+
+// newBackupAPIEnv creates a test env with a properly configured backup manager.
+func newBackupAPIEnv(t *testing.T) *apiTestEnv {
+	t.Helper()
+	database, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+
+	cfg := &config.Config{
+		Server:   config.ServerConfig{BaseURL: "http://proxy.local"},
+		Storage:  config.StorageConfig{DataDir: t.TempDir()},
+		Defaults: config.DefaultsConfig{RefreshIntervalMinutes: 60},
+		Backup:   config.BackupConfig{MaxBackups: 5},
+	}
+
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux, database, feed.NewFetcher(cfg), nil, cfg, backup.New(database, cfg))
+	return &apiTestEnv{db: database, mux: mux, cfg: cfg}
+}
+
+func TestCreateBackup_Returns201WithInfo(t *testing.T) {
+	env := newBackupAPIEnv(t)
+
+	w := env.do("POST", "/api/backups", "")
+	if w.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d\nbody: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["name"] == "" || resp["name"] == nil {
+		t.Error("name should not be empty")
+	}
+	if sizeBytes, ok := resp["size_bytes"].(float64); !ok || sizeBytes <= 0 {
+		t.Errorf("size_bytes should be > 0, got %v", resp["size_bytes"])
+	}
+	if resp["created_at"] == "" || resp["created_at"] == nil {
+		t.Error("created_at should not be empty")
+	}
+}
+
+func TestListBackups_EmptyInitially(t *testing.T) {
+	env := newBackupAPIEnv(t)
+
+	w := env.do("GET", "/api/backups", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d\nbody: %s", w.Code, w.Body.String())
+	}
+
+	var resp []any
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if len(resp) != 0 {
+		t.Errorf("want empty list, got %d items", len(resp))
+	}
+}
+
+func TestListBackups_ReturnsCreatedBackup(t *testing.T) {
+	env := newBackupAPIEnv(t)
+
+	env.do("POST", "/api/backups", "")
+
+	w := env.do("GET", "/api/backups", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d\nbody: %s", w.Code, w.Body.String())
+	}
+
+	var resp []any
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if len(resp) != 1 {
+		t.Errorf("want 1 backup, got %d", len(resp))
+	}
+}
+
 func TestBulkCacheFeed_SkipsCachedAndInProgress(t *testing.T) {
 	database, err := db.Open(t.TempDir())
 	if err != nil {
@@ -511,7 +592,7 @@ func TestBulkCacheFeed_SkipsCachedAndInProgress(t *testing.T) {
 	t.Cleanup(prefetcher.Stop)
 
 	mux := http.NewServeMux()
-	api.RegisterRoutes(mux, database, feed.NewFetcher(cfg), prefetcher, cfg)
+	api.RegisterRoutes(mux, database, feed.NewFetcher(cfg), prefetcher, cfg, backup.New(database, cfg))
 
 	env := &apiTestEnv{db: database, mux: mux, cfg: cfg, rssSrv: rssSrv}
 	env.do("POST", "/api/feeds", `{"url":"`+rssSrv.URL+`"}`)

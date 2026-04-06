@@ -12,6 +12,7 @@ type Config struct {
 	Server   ServerConfig   `yaml:"server"`
 	Storage  StorageConfig  `yaml:"storage"`
 	Defaults DefaultsConfig `yaml:"defaults"`
+	Backup   BackupConfig   `yaml:"backup"`
 }
 
 type ServerConfig struct {
@@ -31,6 +32,12 @@ type DefaultsConfig struct {
 	PrefetchConcurrency    int  `yaml:"prefetch_concurrency"`
 }
 
+type BackupConfig struct {
+	Dir             string `yaml:"dir"`              // defaults to {data_dir}/backups
+	MaxBackups      int    `yaml:"max_backups"`       // 0 = unlimited
+	IntervalMinutes int    `yaml:"interval_minutes"`  // 0 = disabled
+}
+
 const defaultPort = 8080
 
 func Load(path string) (*Config, error) {
@@ -47,6 +54,9 @@ func Load(path string) (*Config, error) {
 			AutoPrefetch:           false,
 			PrefetchMaxAgeDays:     30,
 			PrefetchConcurrency:    2,
+		},
+		Backup: BackupConfig{
+			MaxBackups: 5,
 		},
 	}
 

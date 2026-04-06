@@ -20,6 +20,7 @@ Podcast App → /episodes/:feed/:ep  → write-through stream cache
 | `internal/feed` | RSS fetching/parsing, background poller, prefetch worker pool |
 | `internal/proxy` | Episode handler: cache hit → `http.ServeContent`; miss → `io.TeeReader` stream-while-caching |
 | `internal/api` | REST API handlers |
+| `internal/backup` | On-demand and scheduled database backups via `VACUUM INTO` |
 | `internal/ui` | HTMX web UI with embedded HTML templates |
 
 ## Data Model
@@ -37,6 +38,8 @@ DELETE /api/feeds/:id                   Remove feed and purge cached files
 POST   /api/feeds/:id/refresh           Force RSS re-fetch (regenerates cached XML)
 POST   /api/feeds/:id/prefetch          Queue uncached episodes within age window
 POST   /api/feeds/:id/bulk-cache        Queue specific episodes by URL ID (body: {"episode_ids": [...]})
+POST   /api/backups                     Trigger an immediate database backup
+GET    /api/backups                     List existing backups (name, size, created_at)
 POST   /ui/feeds/:id/bulk-cache         UI: queue selected uncached episodes for download
 POST   /ui/feeds/:id/bulk-delete        UI: delete cached files for selected episodes
 GET    /feeds/:id.rss                   Proxied RSS feed (used by podcast apps)
@@ -73,6 +76,7 @@ Multi-arch image (amd64 + arm64). Volumes: `podproxy-data` (SQLite) and `podprox
 - **Feed poller:** Single goroutine ticks every minute, checks which feeds are past their `refresh_interval_minutes`. Regenerates RSS cache when new episodes arrive.
 - **HTTP/2 disabled** on upstream transport to prevent CDN connection resets.
 - **Bulk select mode:** UI episode list has an opt-in "Select" button that reveals checkboxes and bulk toolbar. "Cache Selected" targets `none`/`failed` episodes; "Delete Cached" targets `cached` episodes only. Both are enforced server-side — wrong-status episodes are silently skipped.
+- **Database backups:** `VACUUM INTO` produces a consistent, defragmented snapshot safe to take while live. `backup.Manager` handles on-demand creation, rotation (keeps newest N, deletes tail), and an optional scheduled ticker. `Stop()` uses `sync.Once` to allow safe multiple calls.
 
 ## Roadmap
 

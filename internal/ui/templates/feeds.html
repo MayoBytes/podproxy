@@ -20,6 +20,53 @@
 
 {{template "feed-list" .}}
 
+{{template "backup-section" .Backup}}
+
+{{end}}
+
+{{define "backup-section"}}
+<div id="backup-section" style="margin-top:1.25rem">
+  {{if .Message}}
+  <div class="alert {{if .IsError}}alert-err{{else}}alert-ok{{end}}">{{.Message}}</div>
+  {{end}}
+  <div class="card">
+    <div class="add-form">
+      <h2>Database Backups</h2>
+      <div class="form-row">
+        <button class="btn btn-secondary"
+                hx-post="/ui/backups"
+                hx-target="#backup-section"
+                hx-swap="outerHTML"
+                hx-indicator="#backup-spinner">Create Backup</button>
+        <span id="backup-spinner" class="htmx-indicator">Creating...</span>
+      </div>
+    </div>
+    {{if .Backups}}
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Size</th>
+          <th>Created</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Backups}}
+        <tr>
+          <td><code style="font-size:0.8rem">{{.Name}}</code></td>
+          <td>{{humanSize .SizeBytes}}</td>
+          <td>{{.CreatedAt.Format "Jan 2, 2006 15:04 UTC"}}</td>
+          <td><a href="/ui/backups/{{.Name}}" class="btn btn-sm btn-secondary" download>Download</a></td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{else}}
+    <p style="padding:1.5rem 1.25rem;color:var(--text-muted);font-size:0.88rem">No backups yet.</p>
+    {{end}}
+  </div>
+</div>
 {{end}}
 
 {{define "feed-list"}}

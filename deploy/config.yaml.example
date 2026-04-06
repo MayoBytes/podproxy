@@ -24,3 +24,16 @@ defaults:
 
   # Number of simultaneous background download workers.
   prefetch_concurrency: 2
+
+backup:
+  # Directory where backup files are stored.
+  # Defaults to {data_dir}/backups when not set.
+  # dir: ./data/backups
+
+  # Maximum number of backups to keep. Oldest are removed when the limit is
+  # exceeded. Set to 0 for unlimited retention.
+  max_backups: 5
+
+  # How often to automatically create a backup (minutes).
+  # Set to 0 to disable scheduled backups (manual-only via POST /api/backups).
+  interval_minutes: 0
