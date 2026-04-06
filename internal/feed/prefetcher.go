@@ -60,6 +60,7 @@ func (p *Prefetcher) Start() {
 	if concurrency <= 0 {
 		concurrency = 2
 	}
+	log.Printf("prefetcher: starting %d workers (queue size %d)", concurrency, prefetchQueueSize)
 	for i := 0; i < concurrency; i++ {
 		p.wg.Add(1)
 		go func() {
@@ -85,6 +86,7 @@ func (p *Prefetcher) Enqueue(ep *db.Episode) bool {
 	case p.queue <- ep:
 		return true
 	default:
+		log.Printf("prefetcher: queue full, dropping %s", ep.ID)
 		return false
 	}
 }
@@ -123,6 +125,7 @@ func (p *Prefetcher) downloadWithRetry(ep *db.Episode) {
 	// Re-check cache status — may have been cached by a concurrent proxy request.
 	current, err := p.database.GetEpisodeByURLID(ep.FeedID, ep.URLID)
 	if err == nil && (current.CacheStatus == "cached" || current.CacheStatus == "in_progress") {
+		log.Printf("prefetcher: skip %s (already %s)", ep.ID, current.CacheStatus)
 		return
 	}
 

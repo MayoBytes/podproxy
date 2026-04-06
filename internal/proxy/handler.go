@@ -90,6 +90,7 @@ func (h *handler) serveFeed(w http.ResponseWriter, r *http.Request) {
 	if f.LastFetchedAt != nil && time.Since(*f.LastFetchedAt) < staleDur {
 		if info, err := os.Stat(cachePath); err == nil && !info.ModTime().Before(*f.LastFetchedAt) {
 			if data, err := os.ReadFile(cachePath); err == nil {
+				log.Printf("feed cache hit %s", feedID)
 				w.Header().Set("Content-Type", "application/rss+xml; charset=utf-8")
 				w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 				w.Write(data)
@@ -97,6 +98,7 @@ func (h *handler) serveFeed(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		// Cache file missing or older than the last DB refresh — fall through to re-fetch.
+		log.Printf("feed cache stale or missing for %s, re-fetching", feedID)
 	}
 
 	// Fetch fresh XML from origin. Fetch also parses episodes so we can upsert
@@ -168,6 +170,7 @@ func (h *handler) serveEpisode(w http.ResponseWriter, r *http.Request) {
 
 	// Fast path: episode is fully cached on disk.
 	if ep.CacheStatus == "cached" && ep.CachedPath != "" {
+		log.Printf("proxy: cache hit %s/%s", feedID, epID)
 		h.serveCachedEpisode(w, r, ep)
 		return
 	}
@@ -175,6 +178,7 @@ func (h *handler) serveEpisode(w http.ResponseWriter, r *http.Request) {
 	// In-progress: prefetcher is already downloading this episode — proxy directly
 	// rather than starting a competing write-through fetch.
 	if ep.CacheStatus == "in_progress" {
+		log.Printf("proxy: episode %s/%s in_progress, proxying directly", feedID, epID)
 		h.proxyDirect(w, r, ep)
 		return
 	}
@@ -188,6 +192,7 @@ func (h *handler) serveEpisode(w http.ResponseWriter, r *http.Request) {
 	// Try to become the goroutine responsible for caching this episode.
 	if !h.tryFetchLock(ep.ID) {
 		// Another goroutine is already writing this episode to disk — proxy directly.
+		log.Printf("proxy: episode %s/%s locked by concurrent fetch, proxying directly", feedID, epID)
 		h.proxyDirect(w, r, ep)
 		return
 	}
@@ -197,6 +202,7 @@ func (h *handler) serveEpisode(w http.ResponseWriter, r *http.Request) {
 		// for the duration of proxyDirect (which may take a while for large
 		// ranges), then backgroundFetch runs. Other clients hitting this episode
 		// concurrently will see the lock and fall through to proxyDirect themselves.
+		log.Printf("proxy: range request for uncached %s/%s, proxying range + background fetch", feedID, epID)
 		h.proxyDirect(w, r, ep)
 		go func() {
 			defer h.releaseFetchLock(ep.ID)
@@ -208,6 +214,7 @@ func (h *handler) serveEpisode(w http.ResponseWriter, r *http.Request) {
 	// Write-through: stream to the client and write to disk simultaneously.
 	// If the origin closes the connection early, enqueue the episode in the
 	// prefetcher so it is retried in the background with backoff.
+	log.Printf("proxy: write-through fetch %s/%s", feedID, epID)
 	needsRetry := h.writeThroughFetch(w, r, ep)
 	h.releaseFetchLock(ep.ID)
 	if needsRetry {
@@ -221,6 +228,7 @@ func (h *handler) serveCachedEpisode(w http.ResponseWriter, r *http.Request, ep 
 	f, err := os.Open(ep.CachedPath)
 	if err != nil {
 		// Cache file disappeared — reset status so the next request re-fetches.
+		log.Printf("proxy: cached file missing for %s, resetting to none: %v", ep.ID, err)
 		_ = h.db.UpdateEpisodeCacheStatus(ep.ID, "none", nil, 0, "")
 		h.proxyDirect(w, r, ep)
 		return
@@ -297,6 +305,7 @@ func (h *handler) writeThroughFetch(w http.ResponseWriter, r *http.Request, ep *
 
 	if resp.StatusCode != http.StatusOK {
 		// Non-200: forward as-is, don't cache.
+		log.Printf("proxy: write-through %s: origin returned %d, not caching", ep.ID, resp.StatusCode)
 		for _, key := range []string{"Content-Type", "Content-Length"} {
 			if v := resp.Header.Get(key); v != "" {
 				w.Header().Set(key, v)
@@ -327,10 +336,12 @@ func (h *handler) writeThroughFetch(w http.ResponseWriter, r *http.Request, ep *
 	if err := h.cacheBody(ep, cachePath, contentType, io.TeeReader(resp.Body, cw)); err != nil {
 		if r.Context().Err() != nil || cw.wroteErr {
 			// Client disconnected — reset so the next request retries.
+			log.Printf("proxy: client disconnected during write-through %s, resetting to none", ep.ID)
 			_ = h.db.UpdateEpisodeCacheStatus(ep.ID, "none", nil, 0, "")
 		} else {
 			// Origin closed the connection early (e.g. CDN rate-limiting concurrent
 			// streams). Reset to none and signal the caller to enqueue a background retry.
+			log.Printf("proxy: origin closed early during write-through %s, queuing background retry: %v", ep.ID, err)
 			_ = h.db.UpdateEpisodeCacheStatus(ep.ID, "none", nil, 0, "")
 			return true
 		}
@@ -356,6 +367,7 @@ func (cw *clientWriter) Write(p []byte) (int, error) {
 // backgroundFetch downloads the full episode to disk without streaming to any
 // client. Used after a Range request so future requests can be served locally.
 func (h *handler) backgroundFetch(ep *db.Episode) {
+	log.Printf("proxy: background fetch starting %s", ep.ID)
 	cachePath := h.episodeCachePath(ep)
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, ep.OriginalURL, nil)

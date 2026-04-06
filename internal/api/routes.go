@@ -101,6 +101,7 @@ func (h *handler) addFeed(w http.ResponseWriter, r *http.Request) {
 		log.Printf("update fetched_at: %v", err)
 	}
 
+	log.Printf("api: added feed %s (%q, %d episodes)", feedID, result.Feed.Title, len(result.Episodes))
 	proxyURL := fmt.Sprintf("%s/feeds/%s.rss", h.cfg.Server.BaseURL, feedID)
 	writeJSON(w, http.StatusCreated, map[string]string{
 		"id":        feedID,
@@ -157,6 +158,7 @@ func (h *handler) deleteFeed(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "database error", http.StatusInternalServerError)
 		return
 	}
+	log.Printf("api: deleted feed %s", id)
 	episodeDir := filepath.Join(h.cfg.Storage.CacheDir, "episodes", id)
 	if err := os.RemoveAll(episodeDir); err != nil {
 		log.Printf("api: remove episode cache dir %s: %v", episodeDir, err)
@@ -215,6 +217,7 @@ func (h *handler) refreshFeed(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	log.Printf("api: refreshed feed %s (%d episodes)", id, len(result.Episodes))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":            id,
 		"episodes_seen": len(result.Episodes),

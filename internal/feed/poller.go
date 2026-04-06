@@ -54,16 +54,21 @@ func (p *Poller) refreshStaleFeeds() {
 		log.Printf("poller: list feeds: %v", err)
 		return
 	}
+	dueCount := 0
 	for _, f := range feeds {
 		due := f.LastFetchedAt == nil ||
 			time.Since(*f.LastFetchedAt) >= time.Duration(f.RefreshIntervalMinutes)*time.Minute
 		if due {
+			dueCount++
 			p.wg.Add(1)
 			go func() {
 				defer p.wg.Done()
 				p.refreshFeed(f)
 			}()
 		}
+	}
+	if dueCount > 0 {
+		log.Printf("poller: %d/%d feeds due for refresh", dueCount, len(feeds))
 	}
 }
 
