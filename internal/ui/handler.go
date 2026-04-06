@@ -55,6 +55,7 @@ func RegisterRoutes(mux *http.ServeMux, database *db.DB, fetcher *feed.Fetcher, 
 	mux.HandleFunc("POST /ui/feeds/{id}/refresh", h.refreshFeed)
 	mux.HandleFunc("POST /ui/feeds/{id}/toggle-autoprefetch", h.toggleAutoPrefetch)
 	mux.HandleFunc("POST /ui/feeds/{id}/bulk-cache", h.bulkCacheEpisodes)
+	mux.HandleFunc("POST /ui/feeds/{id}/bulk-delete", h.bulkDeleteEpisodes)
 	mux.HandleFunc("POST /ui/feeds/{id}/episodes/{epid}/cache", h.cacheEpisode)
 	mux.HandleFunc("DELETE /ui/feeds/{id}/episodes/{epid}", h.deleteEpisodeCache)
 }
@@ -368,6 +369,57 @@ func (h *uiHandler) bulkCacheEpisodes(w http.ResponseWriter, r *http.Request) {
 		msg += fmt.Sprintf(" %d dropped (queue full — try again shortly).", dropped)
 	}
 	h.renderEpisodeList(w, feedID, msg, false)
+}
+
+// bulkDeleteEpisodes handles POST /ui/feeds/{id}/bulk-delete.
+// It accepts one or more "ep" form values (episode URLIDs) and deletes the
+// cached file for each cached episode, resetting its status to "none".
+func (h *uiHandler) bulkDeleteEpisodes(w http.ResponseWriter, r *http.Request) {
+	feedID := r.PathValue("id")
+	if err := r.ParseForm(); err != nil {
+		h.renderEpisodeList(w, feedID, "Invalid request.", true)
+		return
+	}
+	urlIDs := r.Form["ep"]
+	if len(urlIDs) == 0 {
+		h.renderEpisodeList(w, feedID, "No episodes selected.", false)
+		return
+	}
+	deleted, skipped, failed := 0, 0, 0
+	for _, urlID := range urlIDs {
+		ep, err := h.db.GetEpisodeByURLID(feedID, urlID)
+		if errors.Is(err, db.ErrNotFound) {
+			continue
+		} else if err != nil {
+			log.Printf("ui: bulk-delete get episode %s/%s: %v", feedID, urlID, err)
+			continue
+		}
+		if ep.CacheStatus != "cached" {
+			skipped++
+			continue
+		}
+		if ep.CachedPath != "" {
+			if err := os.Remove(ep.CachedPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				log.Printf("ui: bulk-delete remove %s: %v", ep.ID, err)
+				failed++
+				continue
+			}
+		}
+		if err := h.db.UpdateEpisodeCacheStatus(ep.ID, "none", nil, 0, ""); err != nil {
+			log.Printf("ui: bulk-delete update status %s: %v", ep.ID, err)
+			failed++
+			continue
+		}
+		deleted++
+	}
+	msg := fmt.Sprintf("Deleted %d cached file(s).", deleted)
+	if skipped > 0 {
+		msg += fmt.Sprintf(" %d skipped (not cached or in progress).", skipped)
+	}
+	if failed > 0 {
+		msg += fmt.Sprintf(" %d could not be deleted.", failed)
+	}
+	h.renderEpisodeList(w, feedID, msg, failed > 0)
 }
 
 // renderEpisodeList writes only the #episode-list fragment (HTMX target).

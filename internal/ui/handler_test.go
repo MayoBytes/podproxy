@@ -15,34 +15,36 @@ import (
 	"podproxy/internal/ui"
 )
 
-// newUITestEnvWithPrefetcher is like newUITestEnv but registers a live prefetcher.
-func newUITestEnvWithPrefetcher(t *testing.T) *uiTestEnv {
+// newBaseTestComponents creates the RSS test server and opens a test database,
+// registering cleanup for both. Called by the two env constructors below.
+func newBaseTestComponents(t *testing.T) (*db.DB, *httptest.Server) {
 	t.Helper()
-
 	rssSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/rss+xml")
 		w.Write([]byte(uiTestRSS))
 	}))
 	t.Cleanup(rssSrv.Close)
-
 	database, err := db.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
 	t.Cleanup(func() { database.Close() })
+	return database, rssSrv
+}
 
+// newUITestEnvWithPrefetcher is like newUITestEnv but registers a live prefetcher.
+func newUITestEnvWithPrefetcher(t *testing.T) *uiTestEnv {
+	t.Helper()
+	database, rssSrv := newBaseTestComponents(t)
 	cfg := &config.Config{
 		Server:   config.ServerConfig{Port: 8080, BaseURL: "http://proxy.local"},
 		Storage:  config.StorageConfig{CacheDir: t.TempDir()},
 		Defaults: config.DefaultsConfig{RefreshIntervalMinutes: 60, PrefetchConcurrency: 1},
 	}
-
 	prefetcher := feed.NewPrefetcher(database, cfg)
 	t.Cleanup(prefetcher.Stop)
-
 	mux := http.NewServeMux()
 	ui.RegisterRoutes(mux, database, feed.NewFetcher(cfg), prefetcher, cfg)
-
 	return &uiTestEnv{db: database, mux: mux, cfg: cfg, rssSrv: rssSrv}
 }
 
@@ -69,31 +71,14 @@ type uiTestEnv struct {
 
 func newUITestEnv(t *testing.T) *uiTestEnv {
 	t.Helper()
-
-	rssSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/rss+xml")
-		w.Write([]byte(uiTestRSS))
-	}))
-	t.Cleanup(rssSrv.Close)
-
-	database, err := db.Open(t.TempDir())
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { database.Close() })
-
+	database, rssSrv := newBaseTestComponents(t)
 	cfg := &config.Config{
-		Server: config.ServerConfig{
-			Port:    8080,
-			BaseURL: "http://proxy.local",
-		},
+		Server:   config.ServerConfig{Port: 8080, BaseURL: "http://proxy.local"},
 		Storage:  config.StorageConfig{CacheDir: t.TempDir()},
 		Defaults: config.DefaultsConfig{RefreshIntervalMinutes: 60},
 	}
-
 	mux := http.NewServeMux()
 	ui.RegisterRoutes(mux, database, feed.NewFetcher(cfg), nil, cfg)
-
 	return &uiTestEnv{db: database, mux: mux, cfg: cfg, rssSrv: rssSrv}
 }
 
@@ -280,7 +265,9 @@ func TestUIDeleteFeed_InProgress_ShowsError(t *testing.T) {
 	if len(eps) == 0 {
 		t.Skip("no episodes in test feed")
 	}
-	env.db.UpdateEpisodeCacheStatus(eps[0].ID, "in_progress", nil, 0, "")
+	if err := env.db.UpdateEpisodeCacheStatus(eps[0].ID, "in_progress", nil, 0, ""); err != nil {
+		t.Fatalf("setup: UpdateEpisodeCacheStatus: %v", err)
+	}
 
 	w := env.do("DELETE", "/ui/feeds/ui-test-podcast")
 	if w.Code != http.StatusOK {
@@ -626,7 +613,9 @@ func TestUIBulkCacheEpisodes_SkipsCachedEpisodes(t *testing.T) {
 		t.Fatalf("setup: ListEpisodesByFeed: %v (count=%d)", err, len(eps))
 	}
 	cachedPath := "/some/path"
-	env.db.UpdateEpisodeCacheStatus(eps[0].ID, "cached", &cachedPath, 1234, "audio/mpeg")
+	if err := env.db.UpdateEpisodeCacheStatus(eps[0].ID, "cached", &cachedPath, 1234, "audio/mpeg"); err != nil {
+		t.Fatalf("setup: UpdateEpisodeCacheStatus: %v", err)
+	}
 
 	w := env.doForm("POST", "/ui/feeds/ui-test-podcast/bulk-cache", url.Values{"ep": {eps[0].URLID}})
 	if w.Code != http.StatusOK {
@@ -635,5 +624,244 @@ func TestUIBulkCacheEpisodes_SkipsCachedEpisodes(t *testing.T) {
 	body := w.Body.String()
 	if !strings.Contains(body, "already cached or in progress") {
 		t.Errorf("response should mention skipped episodes; got: %s", body)
+	}
+}
+
+func TestUIBulkCacheEpisodes_SkipsInProgressEpisodes(t *testing.T) {
+	env := newUITestEnvWithPrefetcher(t)
+	env.doForm("POST", "/ui/feeds/add", url.Values{"url": {env.rssSrv.URL}})
+
+	eps, err := env.db.ListEpisodesByFeed("ui-test-podcast")
+	if err != nil || len(eps) == 0 {
+		t.Fatalf("setup: ListEpisodesByFeed: %v (count=%d)", err, len(eps))
+	}
+	if err := env.db.UpdateEpisodeCacheStatus(eps[0].ID, "in_progress", nil, 0, ""); err != nil {
+		t.Fatalf("setup: UpdateEpisodeCacheStatus: %v", err)
+	}
+
+	w := env.doForm("POST", "/ui/feeds/ui-test-podcast/bulk-cache", url.Values{"ep": {eps[0].URLID}})
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d\nbody: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "already cached or in progress") {
+		t.Errorf("response should mention skipped in-progress episode; got: %s", body)
+	}
+	// Status must not have changed.
+	updated, err := env.db.GetEpisodeByURLID("ui-test-podcast", eps[0].URLID)
+	if err != nil {
+		t.Fatalf("GetEpisodeByURLID: %v", err)
+	}
+	if updated.CacheStatus != "in_progress" {
+		t.Errorf("cache status should still be in_progress, got %q", updated.CacheStatus)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// POST /ui/feeds/{id}/bulk-delete
+// ---------------------------------------------------------------------------
+
+func TestUIBulkDeleteEpisodes_NoEpisodesSelected_ShowsMessage(t *testing.T) {
+	env := newUITestEnv(t)
+	env.doForm("POST", "/ui/feeds/add", url.Values{"url": {env.rssSrv.URL}})
+
+	w := env.doForm("POST", "/ui/feeds/ui-test-podcast/bulk-delete", url.Values{})
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200 (rendered fragment), got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "No episodes selected") {
+		t.Error("response should mention no episodes were selected")
+	}
+}
+
+func TestUIBulkDeleteEpisodes_DeletesCachedEpisodes(t *testing.T) {
+	env := newUITestEnv(t)
+	env.doForm("POST", "/ui/feeds/add", url.Values{"url": {env.rssSrv.URL}})
+
+	eps, err := env.db.ListEpisodesByFeed("ui-test-podcast")
+	if err != nil || len(eps) == 0 {
+		t.Fatalf("setup: ListEpisodesByFeed: %v (count=%d)", err, len(eps))
+	}
+
+	// Create a real file to simulate a cached episode.
+	f, err := os.CreateTemp(t.TempDir(), "ep-*.mp3")
+	if err != nil {
+		t.Fatalf("setup: create temp file: %v", err)
+	}
+	cachedPath := f.Name()
+	f.Close()
+
+	if err := env.db.UpdateEpisodeCacheStatus(eps[0].ID, "cached", &cachedPath, 999, "audio/mpeg"); err != nil {
+		t.Fatalf("setup: UpdateEpisodeCacheStatus: %v", err)
+	}
+
+	w := env.doForm("POST", "/ui/feeds/ui-test-podcast/bulk-delete", url.Values{"ep": {eps[0].URLID}})
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d\nbody: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "alert-err") {
+		t.Error("successful bulk-delete should not render error alert")
+	}
+	if !strings.Contains(body, "Deleted 1 cached file") {
+		t.Errorf("response should confirm deletion count; got: %s", body)
+	}
+
+	// File must be gone.
+	if _, err := os.Stat(cachedPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("cached file should have been deleted, stat err: %v", err)
+	}
+
+	// DB status must be reset to none.
+	updated, err := env.db.GetEpisodeByURLID("ui-test-podcast", eps[0].URLID)
+	if err != nil {
+		t.Fatalf("GetEpisodeByURLID after bulk-delete: %v", err)
+	}
+	if updated.CacheStatus != "none" {
+		t.Errorf("cache status should be none after delete, got %q", updated.CacheStatus)
+	}
+}
+
+// TestUIBulkDeleteEpisodes_SkipsNonCachedEpisodes verifies that the server
+// ignores episode IDs whose status is not "cached" — guarding against a client
+// sending a mixed selection or a stale payload.
+func TestUIBulkDeleteEpisodes_SkipsNonCachedEpisodes(t *testing.T) {
+	for _, status := range []string{"none", "failed"} {
+		t.Run(status, func(t *testing.T) {
+			env := newUITestEnv(t)
+			env.doForm("POST", "/ui/feeds/add", url.Values{"url": {env.rssSrv.URL}})
+
+			eps, err := env.db.ListEpisodesByFeed("ui-test-podcast")
+			if err != nil || len(eps) == 0 {
+				t.Fatalf("setup: ListEpisodesByFeed: %v (count=%d)", err, len(eps))
+			}
+			if status != "none" {
+				if err := env.db.UpdateEpisodeCacheStatus(eps[0].ID, status, nil, 0, ""); err != nil {
+					t.Fatalf("setup: UpdateEpisodeCacheStatus: %v", err)
+				}
+			}
+
+			w := env.doForm("POST", "/ui/feeds/ui-test-podcast/bulk-delete", url.Values{"ep": {eps[0].URLID}})
+			if w.Code != http.StatusOK {
+				t.Fatalf("want 200, got %d\nbody: %s", w.Code, w.Body.String())
+			}
+			body := w.Body.String()
+			if !strings.Contains(body, "skipped") {
+				t.Errorf("response should mention skipped episode; got: %s", body)
+			}
+			// Status must be unchanged.
+			updated, err := env.db.GetEpisodeByURLID("ui-test-podcast", eps[0].URLID)
+			if err != nil {
+				t.Fatalf("GetEpisodeByURLID: %v", err)
+			}
+			if updated.CacheStatus != status {
+				t.Errorf("cache status should still be %q, got %q", status, updated.CacheStatus)
+			}
+		})
+	}
+}
+
+// TestUIBulkDeleteEpisodes_SkipsInProgressEpisodes verifies that an in-flight
+// download is not interrupted: the file write is active and removing it would
+// corrupt the cache entry.
+func TestUIBulkDeleteEpisodes_SkipsInProgressEpisodes(t *testing.T) {
+	env := newUITestEnv(t)
+	env.doForm("POST", "/ui/feeds/add", url.Values{"url": {env.rssSrv.URL}})
+
+	eps, err := env.db.ListEpisodesByFeed("ui-test-podcast")
+	if err != nil || len(eps) == 0 {
+		t.Fatalf("setup: ListEpisodesByFeed: %v (count=%d)", err, len(eps))
+	}
+	if err := env.db.UpdateEpisodeCacheStatus(eps[0].ID, "in_progress", nil, 0, ""); err != nil {
+		t.Fatalf("setup: UpdateEpisodeCacheStatus: %v", err)
+	}
+
+	w := env.doForm("POST", "/ui/feeds/ui-test-podcast/bulk-delete", url.Values{"ep": {eps[0].URLID}})
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d\nbody: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "skipped") {
+		t.Errorf("response should mention skipped in-progress episode; got: %s", body)
+	}
+	// Status must be unchanged.
+	updated, err := env.db.GetEpisodeByURLID("ui-test-podcast", eps[0].URLID)
+	if err != nil {
+		t.Fatalf("GetEpisodeByURLID: %v", err)
+	}
+	if updated.CacheStatus != "in_progress" {
+		t.Errorf("cache status should still be in_progress, got %q", updated.CacheStatus)
+	}
+}
+
+// TestUIBulkDeleteEpisodes_MixedSelection verifies that a payload containing
+// both cached and non-cached episode IDs reports the correct deleted/skipped
+// counts and only resets the status of episodes that were actually deleted.
+func TestUIBulkDeleteEpisodes_MixedSelection(t *testing.T) {
+	env := newUITestEnv(t)
+	env.doForm("POST", "/ui/feeds/add", url.Values{"url": {env.rssSrv.URL}})
+
+	eps, err := env.db.ListEpisodesByFeed("ui-test-podcast")
+	if err != nil || len(eps) == 0 {
+		t.Fatalf("setup: ListEpisodesByFeed: %v (count=%d)", err, len(eps))
+	}
+
+	// Insert a second episode manually so we have one cached and one not.
+	ep2 := &db.Episode{
+		ID:          "ui-test-podcast/ep2",
+		FeedID:      "ui-test-podcast",
+		URLID:       "ep2",
+		Title:       "Episode Two",
+		OriginalURL: "https://cdn.example.com/ep2.mp3",
+		CacheStatus: "none",
+	}
+	if err := env.db.UpsertEpisode(ep2); err != nil {
+		t.Fatalf("setup: UpsertEpisode: %v", err)
+	}
+
+	// Create a real file and mark eps[0] as cached.
+	f, err := os.CreateTemp(t.TempDir(), "ep-*.mp3")
+	if err != nil {
+		t.Fatalf("setup: create temp file: %v", err)
+	}
+	cachedPath := f.Name()
+	f.Close()
+	if err := env.db.UpdateEpisodeCacheStatus(eps[0].ID, "cached", &cachedPath, 999, "audio/mpeg"); err != nil {
+		t.Fatalf("setup: UpdateEpisodeCacheStatus: %v", err)
+	}
+
+	// Submit both IDs: one cached (should delete) and one none (should skip).
+	w := env.doForm("POST", "/ui/feeds/ui-test-podcast/bulk-delete",
+		url.Values{"ep": {eps[0].URLID, ep2.URLID}})
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d\nbody: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "Deleted 1 cached file") {
+		t.Errorf("response should confirm 1 deletion; got: %s", body)
+	}
+	if !strings.Contains(body, "skipped") {
+		t.Errorf("response should report skipped count; got: %s", body)
+	}
+
+	// Cached episode's file and DB status must be reset.
+	if _, err := os.Stat(cachedPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("cached file should have been deleted, stat err: %v", err)
+	}
+	updatedCached, err := env.db.GetEpisodeByURLID("ui-test-podcast", eps[0].URLID)
+	if err != nil {
+		t.Fatalf("GetEpisodeByURLID after delete: %v", err)
+	}
+	if updatedCached.CacheStatus != "none" {
+		t.Errorf("deleted episode status should be none, got %q", updatedCached.CacheStatus)
+	}
+
+	// Non-cached episode must be untouched.
+	updatedSkipped, err := env.db.GetEpisodeByURLID("ui-test-podcast", ep2.URLID)
+	if err != nil {
+		t.Fatalf("GetEpisodeByURLID for skipped: %v", err)
+	}
+	if updatedSkipped.CacheStatus != "none" {
+		t.Errorf("skipped episode status should still be none, got %q", updatedSkipped.CacheStatus)
 	}
 }

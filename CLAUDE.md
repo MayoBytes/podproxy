@@ -37,6 +37,8 @@ DELETE /api/feeds/:id                   Remove feed and purge cached files
 POST   /api/feeds/:id/refresh           Force RSS re-fetch (regenerates cached XML)
 POST   /api/feeds/:id/prefetch          Queue uncached episodes within age window
 POST   /api/feeds/:id/bulk-cache        Queue specific episodes by URL ID (body: {"episode_ids": [...]})
+POST   /ui/feeds/:id/bulk-cache         UI: queue selected uncached episodes for download
+POST   /ui/feeds/:id/bulk-delete        UI: delete cached files for selected episodes
 GET    /feeds/:id.rss                   Proxied RSS feed (used by podcast apps)
 GET    /episodes/:feed_id/:ep_id        Episode audio proxy / cache server
 GET    /health                          Server status and disk usage
@@ -70,6 +72,7 @@ Multi-arch image (amd64 + arm64). Volumes: `podproxy-data` (SQLite) and `podprox
 - **Auto-prefetch:** Per-feed toggle; poller automatically queues new episodes after each refresh.
 - **Feed poller:** Single goroutine ticks every minute, checks which feeds are past their `refresh_interval_minutes`. Regenerates RSS cache when new episodes arrive.
 - **HTTP/2 disabled** on upstream transport to prevent CDN connection resets.
+- **Bulk select mode:** UI episode list has an opt-in "Select" button that reveals checkboxes and bulk toolbar. "Cache Selected" targets `none`/`failed` episodes; "Delete Cached" targets `cached` episodes only. Both are enforced server-side — wrong-status episodes are silently skipped.
 
 ## Roadmap
 

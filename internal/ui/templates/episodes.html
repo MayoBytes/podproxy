@@ -20,28 +20,38 @@
   <div class="alert {{if .IsError}}alert-err{{else}}alert-ok{{end}}">{{.Message}}</div>
   {{end}}
 
-  {{/* Empty form anchor: checkboxes in the table below use form="bulk-cache-form"
-       to associate with this element across the DOM — do not remove. */}}
-  <form id="bulk-cache-form"
-        hx-post="/ui/feeds/{{.Feed.ID}}/bulk-cache"
-        hx-target="#episode-list"
-        hx-swap="outerHTML"
-        hx-indicator="#bulk-indicator">
-  </form>
+  {{if .Episodes}}
+  <div class="episode-list-actions">
+    <button type="button" class="btn btn-sm btn-secondary" onclick="enterSelectMode()">Select</button>
+  </div>
+  {{end}}
 
   <div class="bulk-toolbar">
     <span class="bulk-label">Select:</span>
     <button type="button" class="btn btn-sm btn-secondary" onclick="bulkSelectAll()">All</button>
     <button type="button" class="btn btn-sm btn-secondary" onclick="bulkSelectNone()">None</button>
-    <button type="submit" form="bulk-cache-form" class="btn btn-sm btn-primary">Cache Selected</button>
-    <span id="bulk-indicator" class="htmx-indicator">Queuing…</span>
+    <button id="cache-selected-btn" type="button" class="btn btn-sm btn-primary" disabled
+            hx-post="/ui/feeds/{{.Feed.ID}}/bulk-cache"
+            hx-include="input.bulk-ep-cacheable:checked"
+            hx-target="#episode-list"
+            hx-swap="outerHTML"
+            hx-indicator="#bulk-indicator">Cache Selected</button>
+    <button id="delete-selected-btn" type="button" class="btn btn-sm btn-danger" disabled
+            hx-post="/ui/feeds/{{.Feed.ID}}/bulk-delete"
+            hx-include="input.bulk-ep-cached:checked"
+            hx-target="#episode-list"
+            hx-swap="outerHTML"
+            hx-confirm="Delete cached files for all selected episodes?"
+            hx-indicator="#bulk-indicator">Delete Cached</button>
+    <button type="button" class="btn btn-sm btn-secondary" onclick="exitSelectMode()">Cancel</button>
+    <span id="bulk-indicator" class="htmx-indicator">Working…</span>
   </div>
 
   <div class="card">
     <table>
       <thead>
         <tr>
-          <th></th>
+          <th class="col-check"></th>
           <th>Episode</th>
           <th>Published</th>
           <th>Status</th>
@@ -56,7 +66,9 @@
           <tr>
             <td class="col-check">
               {{if or (eq .CacheStatus "none") (eq .CacheStatus "failed")}}
-              <input type="checkbox" name="ep" value="{{.URLID}}" form="bulk-cache-form" class="bulk-ep-check">
+              <input type="checkbox" name="ep" value="{{.URLID}}" class="bulk-ep-check bulk-ep-cacheable" onchange="updateBulkButtons()">
+              {{else if eq .CacheStatus "cached"}}
+              <input type="checkbox" name="ep" value="{{.URLID}}" class="bulk-ep-check bulk-ep-cached" onchange="updateBulkButtons()">
               {{end}}
             </td>
             <td>{{.Title}}</td>
