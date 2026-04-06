@@ -64,18 +64,12 @@ volumes:
 
 ## NAS Deployment
 
-### Synology
-
-1. Install **Container Manager** from Package Center.
-2. Copy the project to a shared folder (e.g. `/volume1/docker/podproxy`).
-3. Edit `deploy/config.yaml` with your NAS IP.
-4. In Container Manager → Project → Create → select the folder and use `deploy/docker-compose.yml`.
-
 ### TrueNAS SCALE
 
-1. Go to **Apps → Custom App → Launch Custom App**.
-2. Use `ghcr.io/mayobytes/podproxy:latest` as the image, or install Docker Compose via the TrueNAS shell and run `docker compose up -d` from the `deploy/` directory.
-3. Bind host paths under `/mnt` to `/app/data` and `/app/cache` in the compose file.
+1. Go to **Apps → Discover Apps → Custom App**.
+2. Use `ghcr.io/mayobytes/podproxy:latest` as the image.
+3. In **Network Configuration** add the host port and container port you wish to use.
+4. In **Storage Configuration** use type "Host Path" (if using a path on your NAS) and add a host path for both `/app/data` (app database) and `/app/cache` (cached feeds and episodes).
 
 ### Generic Docker host
 
@@ -90,6 +84,51 @@ cd deploy && docker compose up -d
 
 ---
 
+## Nginx Reverse Proxy
+Podproxy currently provides no auth and all the API endpoints are publicly accessible by default.
+If you plan to have your podproxy feeds publicly visible (required to work with some podcast apps like Apple Podcasts & Overcast), then you need to expose those endpoints while protecting the rest.
+
+If you don't know what this is, then just keep podproxy on your local network or tailnet.
+```conf
+server {
+    listen 443 ssl;
+    server_name <your domain>;
+
+    # Public read-only access to feeds and episodes
+    location /feeds/ {
+        limit_except GET HEAD {
+            deny all;
+        }
+        proxy_pass http://<your-server-ip>:<port>;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    location /episodes/ {
+        limit_except GET HEAD {
+            deny all;
+        }
+        proxy_pass http://<your-server-ip>:<port>;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    # Everything else (API, UI, health) is blocked entirely
+    location / {
+        deny all;
+    }
+
+    ssl_certificate /path/to/cert; # managed by Certbot
+    ssl_certificate_key /path/to/cert; # managed by Certbot
+}
+```
+
+## A Note on Hosting
+If you're hosting this on a machine behind a VPN you're probably going to run into errors trying to download episodes from source CDN hosts. In my experience, most podcast CDNs rate-limit or block VPN IPs. This shows up in the logs as `unexpected EOF`. When hosting a server that reaches out from my home network, things work as expected, but connecting that server to a VPN caused a lot of issues downloading.
+
+
+---
+
 ## Usage
 
 ### Web UI
@@ -100,6 +139,7 @@ Navigate to `http://<host>:8080/ui` in a browser:
 - **Episodes** — view all episodes for a feed with their cache status.
 - **Refresh** — force a re-fetch of the feed's RSS to discover new episodes.
 - **Prefetch** — queue all un-cached episodes for background download.
+- **Cache Selected / Delete Cached** — bulk mode (toggle via "Select") lets you pick individual episodes to cache or purge from disk.
 - **Delete** — remove a feed and all its metadata.
 
 ### Podcast App Setup
@@ -109,11 +149,12 @@ After adding a feed via the UI or API, copy the **Proxy URL** (shown on the Epis
 ### API
 
 ```
-POST   /api/feeds               { "url": "https://..." }
+POST   /api/feeds                        { "url": "https://..." }
 GET    /api/feeds
 DELETE /api/feeds/:id
 POST   /api/feeds/:id/refresh
 POST   /api/feeds/:id/prefetch
+POST   /api/feeds/:id/bulk-cache         { "episode_ids": [...] }
 POST   /api/backups
 GET    /api/backups
 GET    /health
