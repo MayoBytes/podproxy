@@ -30,6 +30,10 @@ func main() {
 	}
 	defer database.Close()
 
+	if err := database.ReconcileOnStartup(); err != nil {
+		log.Fatalf("reconcile cache state: %v", err)
+	}
+
 	fetcher := feed.NewFetcher(cfg)
 
 	prefetcher := feed.NewPrefetcher(database, cfg)

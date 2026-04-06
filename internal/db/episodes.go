@@ -4,6 +4,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
+	"log"
+	"os"
+	"strings"
 	"time"
 )
 
@@ -78,6 +82,77 @@ func (db *DB) UpdateEpisodeCacheStatus(id, status string, cachedPath *string, si
 		UPDATE episodes SET cache_status = ?, cached_path = ?, size_bytes = ?, content_type = ? WHERE id = ?`,
 		status, cachedPath, sizeBytes, contentType, id)
 	return err
+}
+
+// ReconcileOnStartup resets stale cache state that can occur when the server
+// stops while files are being written or when cached files are deleted from
+// disk while the server is offline.
+//
+// It performs two passes:
+//  1. Any episode still marked in_progress is reset to none (no write can be
+//     in flight if the server just started).
+//  2. Any episode marked cached whose file is missing from disk is reset to none.
+//
+// Both corrections are logged so the operator can see what was reconciled.
+func (db *DB) ReconcileOnStartup() error {
+	res, err := db.Exec(
+		`UPDATE episodes SET cache_status = 'none', cached_path = NULL WHERE cache_status = 'in_progress'`,
+	)
+	if err != nil {
+		return fmt.Errorf("reset in_progress: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		log.Printf("reconcile: reset %d in_progress episodes to none", n)
+	}
+
+	rows, err := db.Query(
+		`SELECT id, cached_path FROM episodes WHERE cache_status = 'cached' AND cached_path IS NOT NULL`,
+	)
+	if err != nil {
+		return fmt.Errorf("query cached episodes: %w", err)
+	}
+	defer rows.Close()
+
+	type stale struct{ id, path string }
+	var stales []stale
+	for rows.Next() {
+		var id, path string
+		if err := rows.Scan(&id, &path); err != nil {
+			return fmt.Errorf("scan cached episode: %w", err)
+		}
+		_, statErr := os.Stat(path)
+		if statErr == nil {
+			continue
+		}
+		if errors.Is(statErr, fs.ErrNotExist) {
+			stales = append(stales, stale{id, path})
+		} else {
+			log.Printf("reconcile: stat %s: %v (skipping)", path, statErr)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate cached episodes: %w", err)
+	}
+
+	if len(stales) == 0 {
+		return nil
+	}
+
+	ids := make([]any, len(stales))
+	for i, s := range stales {
+		ids[i] = s.id
+	}
+	placeholders := strings.Repeat("?,", len(ids))
+	placeholders = placeholders[:len(placeholders)-1]
+	if _, err := db.Exec(
+		`UPDATE episodes SET cache_status = 'none', cached_path = NULL WHERE id IN (`+placeholders+`)`,
+		ids...,
+	); err != nil {
+		return fmt.Errorf("reset missing episodes: %w", err)
+	}
+	log.Printf("reconcile: reset %d cached episodes with missing files to none", len(stales))
+
+	return nil
 }
 
 func scanEpisode(s scanner) (*Episode, error) {
