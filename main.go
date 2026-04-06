@@ -19,6 +19,8 @@ import (
 	"podproxy/internal/ui"
 )
 
+var version = "dev"
+
 func main() {
 	cfg, err := config.Load("config.yaml")
 	if err != nil {
@@ -62,6 +64,7 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
 			"status":          "ok",
+			"version":         version,
 			"feeds":           stats.FeedCount,
 			"episodes":        stats.EpisodeCount,
 			"cached_episodes": stats.CachedCount,
@@ -78,7 +81,7 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("podproxy listening on %s (base_url: %s)", srv.Addr, cfg.Server.BaseURL)
+		log.Printf("podproxy %s listening on %s (base_url: %s)", version, srv.Addr, cfg.Server.BaseURL)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("server: %v", err)
 		}
