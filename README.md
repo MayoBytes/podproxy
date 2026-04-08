@@ -100,6 +100,10 @@ server {
             deny all;
         }
         proxy_pass http://<your-server-ip>:<port>;
+
+        proxy_buffering off;
+        proxy_read_timeout 120s;
+        proxy_send_timeout 120s;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }
@@ -109,6 +113,10 @@ server {
             deny all;
         }
         proxy_pass http://<your-server-ip>:<port>;
+
+        proxy_buffering off;
+        proxy_read_timeout 120s;
+        proxy_send_timeout 120s;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }
