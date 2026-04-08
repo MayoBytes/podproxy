@@ -201,6 +201,12 @@ var hrefAttrPattern = regexp.MustCompile(`\bhref="[^"]*"`)
 // typeAttrPattern extracts the type="..." attribute from a tag.
 var typeAttrPattern = regexp.MustCompile(`\btype="([^"]*)"`)
 
+// itunesBlockPattern matches any existing itunes:block element so it can be removed.
+var itunesBlockPattern = regexp.MustCompile(`(?i)<itunes:block>[^<]*</itunes:block>`)
+
+// channelOpenPattern matches the opening <channel> tag to inject after it.
+var channelOpenPattern = regexp.MustCompile(`<channel>`)
+
 // mimeToExt maps common podcast MIME types to file extensions, used as a
 // fallback when the original enclosure URL has no extension in its path.
 var mimeToExt = map[string]string{
@@ -244,5 +250,11 @@ func RewriteXML(raw []byte, feedID string, urlMap map[string]string, baseURL str
 	result = atomSelfPattern.ReplaceAllFunc(result, func(match []byte) []byte {
 		return hrefAttrPattern.ReplaceAll(match, []byte(`href="`+proxyFeedURL+`"`))
 	})
+
+	// Force itunes:block=Yes so the proxy feed is never picked up by a podcast
+	// directory index, regardless of what the upstream feed says.
+	result = itunesBlockPattern.ReplaceAll(result, nil)
+	result = channelOpenPattern.ReplaceAllLiteral(result, []byte("<channel><itunes:block>Yes</itunes:block>"))
+
 	return result
 }
