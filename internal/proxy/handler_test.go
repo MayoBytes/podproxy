@@ -148,17 +148,19 @@ func TestServeFeed_ServesCachedFileWhenFresh(t *testing.T) {
 	env := newProxyTestEnv(t)
 	env.seedFeed(t, "cached-pod")
 
-	// Mark as recently fetched.
-	now := time.Now()
-	if err := env.db.UpdateFeedFetchedAt("cached-pod", now); err != nil {
-		t.Fatalf("UpdateFeedFetchedAt: %v", err)
-	}
-
-	// Write a sentinel cache file.
+	// Write the sentinel cache file first, then mark as fetched at a time
+	// strictly in the past so the file's mtime is clearly >= LastFetchedAt.
+	// (The handler rejects cache files whose mtime predates LastFetchedAt, to
+	// force re-generation when the rewrite logic changes — e.g. itunes:block.)
 	cacheDir := filepath.Join(env.cfg.Storage.CacheDir, "feeds")
 	os.MkdirAll(cacheDir, 0755)
 	sentinel := []byte("<rss>CACHED SENTINEL</rss>")
 	os.WriteFile(filepath.Join(cacheDir, "cached-pod.rss"), sentinel, 0644)
+
+	past := time.Now().Add(-time.Second)
+	if err := env.db.UpdateFeedFetchedAt("cached-pod", past); err != nil {
+		t.Fatalf("UpdateFeedFetchedAt: %v", err)
+	}
 
 	w := env.get("/feeds/cached-pod.rss", nil)
 
@@ -361,11 +363,11 @@ func TestServeEpisode_WritesToCacheOnNormalGet(t *testing.T) {
 
 func TestServeEpisode_ServesCachedFile(t *testing.T) {
 	const cachedContent = "content-from-cache-not-origin"
-	originCallCount := 0
+	// The origin server may receive a fire-and-forget analytics ping from
+	// reportUpstreamPlay, so we no longer assert it is never called.
 	originSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		originCallCount++
 		w.Header().Set("Content-Type", "audio/mpeg")
-		w.Write([]byte("ORIGIN CONTENT — should not be served"))
+		w.WriteHeader(http.StatusPartialContent)
 	}))
 	t.Cleanup(originSrv.Close)
 
@@ -391,9 +393,6 @@ func TestServeEpisode_ServesCachedFile(t *testing.T) {
 	}
 	if w.Body.String() != cachedContent {
 		t.Errorf("body: want cached content, got %q", w.Body.String())
-	}
-	if originCallCount != 0 {
-		t.Errorf("origin should not be called for a cached episode; called %d time(s)", originCallCount)
 	}
 }
 
@@ -578,5 +577,101 @@ func TestServeEpisode_ConcurrentClientDisconnects_AllResetToNone(t *testing.T) {
 		if ep.CacheStatus != "none" {
 			t.Errorf("episode %q: cache_status want %q, got %q", id, "none", ep.CacheStatus)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Upstream play reporting (analytics)
+// ---------------------------------------------------------------------------
+
+// TestServeCachedEpisode_ReportsUpstreamPlay verifies that serving a cached
+// episode fires a fire-and-forget GET bytes=0-1 to the original URL so that
+// the podcast host's analytics register the listen. It also checks that the
+// client's User-Agent is forwarded.
+func TestServeCachedEpisode_ReportsUpstreamPlay(t *testing.T) {
+	type capturedReq struct {
+		rangeHeader string
+		userAgent   string
+	}
+	reqCh := make(chan capturedReq, 1)
+
+	originSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case reqCh <- capturedReq{
+			rangeHeader: r.Header.Get("Range"),
+			userAgent:   r.Header.Get("User-Agent"),
+		}:
+		default:
+		}
+		w.WriteHeader(http.StatusPartialContent)
+	}))
+	t.Cleanup(originSrv.Close)
+
+	env := newProxyTestEnv(t)
+	env.db.InsertFeed(&db.Feed{ID: "pod-rpt", Title: "PodRpt", OriginalURL: "https://x.com", RefreshIntervalMinutes: 60})
+	seedEpisode(t, env.db, "pod-rpt", "reportep001", originSrv.URL+"/ep.mp3")
+
+	cacheDir := filepath.Join(env.cfg.Storage.CacheDir, "episodes", "pod-rpt")
+	os.MkdirAll(cacheDir, 0755)
+	cachePath := filepath.Join(cacheDir, "test-episode-reportep001.mp3")
+	os.WriteFile(cachePath, []byte("cached-audio"), 0644)
+	epID := "pod-rpt/ep-reportep001"
+	if err := env.db.UpdateEpisodeCacheStatus(epID, "cached", &cachePath, 12, "audio/mpeg"); err != nil {
+		t.Fatalf("UpdateEpisodeCacheStatus: %v", err)
+	}
+
+	w := env.get("/episodes/pod-rpt/reportep001", map[string]string{"User-Agent": "Overcast/1234"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: want 200, got %d", w.Code)
+	}
+
+	select {
+	case got := <-reqCh:
+		if got.rangeHeader != "bytes=0-1" {
+			t.Errorf("upstream report Range: want %q, got %q", "bytes=0-1", got.rangeHeader)
+		}
+		if got.userAgent != "Overcast/1234" {
+			t.Errorf("upstream report User-Agent: want %q, got %q", "Overcast/1234", got.userAgent)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("upstream play report goroutine did not fire within timeout")
+	}
+}
+
+// TestServeCachedEpisode_NoReportForMidSeek verifies that Range requests with
+// a non-zero start offset (mid-episode seeks) do NOT trigger an upstream play
+// report, preventing over-counting of listens.
+func TestServeCachedEpisode_NoReportForMidSeek(t *testing.T) {
+	called := make(chan struct{}, 1)
+	originSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case called <- struct{}{}:
+		default:
+		}
+		w.WriteHeader(http.StatusPartialContent)
+	}))
+	t.Cleanup(originSrv.Close)
+
+	env := newProxyTestEnv(t)
+	env.db.InsertFeed(&db.Feed{ID: "pod-seek", Title: "PodSeek", OriginalURL: "https://x.com", RefreshIntervalMinutes: 60})
+	seedEpisode(t, env.db, "pod-seek", "seekep00001", originSrv.URL+"/ep.mp3")
+
+	cacheDir := filepath.Join(env.cfg.Storage.CacheDir, "episodes", "pod-seek")
+	os.MkdirAll(cacheDir, 0755)
+	cachePath := filepath.Join(cacheDir, "test-episode-seekep00001.mp3")
+	os.WriteFile(cachePath, []byte("0123456789abcdef"), 0644)
+	epID := "pod-seek/ep-seekep00001"
+	if err := env.db.UpdateEpisodeCacheStatus(epID, "cached", &cachePath, 16, "audio/mpeg"); err != nil {
+		t.Fatalf("UpdateEpisodeCacheStatus: %v", err)
+	}
+
+	env.get("/episodes/pod-seek/seekep00001", map[string]string{"Range": "bytes=500-999"})
+
+	// Give any hypothetical goroutine a moment to fire, then assert silence.
+	select {
+	case <-called:
+		t.Error("upstream play report should not fire for a mid-episode seek")
+	case <-time.After(100 * time.Millisecond):
+		// Expected: no upstream call.
 	}
 }

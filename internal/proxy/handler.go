@@ -239,11 +239,50 @@ func (h *handler) serveCachedEpisode(w http.ResponseWriter, r *http.Request, ep 
 		w.Header().Set("Content-Type", ep.ContentType)
 	}
 
+	// Report the play to the upstream host so their analytics aren't starved by
+	// our cache. Only fire on new plays (no Range, or Range starting at 0) to
+	// avoid over-reporting mid-episode seeks. Fire-and-forget: upstream being
+	// offline must never affect serving the cached file.
+	if r.Method == http.MethodGet && isNewPlay(r) {
+		go h.reportUpstreamPlay(ep.OriginalURL, r.Header.Get("User-Agent"))
+	}
+
 	var modTime time.Time
 	if ep.PubDate != nil {
 		modTime = *ep.PubDate
 	}
 	http.ServeContent(w, r, filepath.Base(ep.CachedPath), modTime, f)
+}
+
+// isNewPlay returns true when the request represents the start of a listen
+// rather than a mid-episode seek. Range requests starting at a non-zero offset
+// are seeks; we skip upstream reporting for those to avoid over-counting.
+func isNewPlay(r *http.Request) bool {
+	rng := r.Header.Get("Range")
+	return rng == "" || strings.HasPrefix(rng, "bytes=0-")
+}
+
+// reportUpstreamPlay fires a minimal GET (Range: bytes=0-1) to the original
+// episode URL so the podcast host's analytics register the listen. The
+// client's User-Agent is forwarded so per-app breakdowns stay accurate.
+// Errors are logged and swallowed — upstream availability must not affect
+// serving cached episodes.
+func (h *handler) reportUpstreamPlay(originalURL, userAgent string) {
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, originalURL, nil)
+	if err != nil {
+		log.Printf("proxy: upstream play report: build request: %v", err)
+		return
+	}
+	req.Header.Set("Range", "bytes=0-1")
+	if userAgent != "" {
+		req.Header.Set("User-Agent", userAgent)
+	}
+	resp, err := h.client.Do(req)
+	if err != nil {
+		log.Printf("proxy: upstream play report %s: %v", originalURL, err)
+		return
+	}
+	resp.Body.Close()
 }
 
 // proxyDirect forwards the request (including any Range header) straight to the
