@@ -1,0 +1,25 @@
+#!/bin/sh
+# Validates commit messages against the Conventional Commits format.
+# https://www.conventionalcommits.org/
+
+msg=$(head -1 "$1")
+
+# Skip merge commits
+if echo "$msg" | grep -qE '^Merge '; then
+  exit 0
+fi
+
+if ! echo "$msg" | grep -qE '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\(.+\))?(!)?: .+'; then
+  echo ""
+  echo "  Bad commit message: \"$msg\""
+  echo ""
+  echo "  Expected format: type(scope)?: description"
+  echo ""
+  echo "  Valid types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert"
+  echo "  Examples:"
+  echo "    feat: add episode search"
+  echo "    fix(proxy): handle empty range header"
+  echo "    chore!: drop Go 1.21 support"
+  echo ""
+  exit 1
+fi

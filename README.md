@@ -131,6 +131,26 @@ server {
 }
 ```
 
+## Contributing
+
+Commit messages must follow [Conventional Commits](https://www.conventionalcommits.org/) format (`type: description`). This is enforced in CI on pull requests.
+
+To enable the same check locally, point Git at the checked-in hooks directory:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+Run tests before pushing:
+
+```bash
+go test ./...
+```
+
+CI runs tests and commit linting on every pull request — both must pass before merging.
+
+---
+
 ## A Note on Hosting
 If you're hosting this on a machine behind a VPN you're probably going to run into errors trying to download episodes from source CDN hosts. In my experience, most podcast CDNs rate-limit or block VPN IPs. This shows up in the logs as `unexpected EOF`. When hosting a server that reaches out from my home network, things work as expected, but connecting that server to a VPN caused a lot of issues downloading.
 
