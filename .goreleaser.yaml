@@ -30,6 +30,16 @@ checksum:
 
 changelog:
   sort: asc
+  use: github
+  groups:
+    - title: "Features"
+      regexp: '^feat'
+      order: 0
+    - title: "Bug Fixes"
+      regexp: '^fix'
+      order: 1
+    - title: "Other"
+      order: 999
   filters:
     exclude:
       - "^docs:"
@@ -37,6 +47,13 @@ changelog:
       - "^chore:"
       - Merge pull request
       - Merge branch
+
+release:
+  footer: |
+    ## Docker
+    ```
+    docker pull ghcr.io/mayobytes/podproxy:{{ .Tag }}
+    ```
 
 dockers:
   - image_templates:
