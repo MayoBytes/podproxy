@@ -17,7 +17,9 @@ Open [http://localhost:8080/ui](http://localhost:8080/ui) to manage feeds.
 
 ---
 
-## Docker Deployment
+## Deployment
+
+### Docker
 
 The image is published to the GitHub Container Registry and pulled automatically by the compose file:
 
@@ -25,13 +27,11 @@ The image is published to the GitHub Container Registry and pulled automatically
 ghcr.io/mayobytes/podproxy:latest
 ```
 
-### 1. Create a config file
+Copy the example config and set `base_url` to the address your podcast app will use to reach the server:
 
 ```bash
 cp deploy/config.yaml.example deploy/config.yaml
 ```
-
-Edit `deploy/config.yaml` and set `base_url` to the address your podcast app will use to reach the server (e.g. your NAS IP or hostname):
 
 ```yaml
 server:
@@ -39,18 +39,14 @@ server:
   base_url: "http://192.168.1.100:8080"
 ```
 
-### 2. Start the container
+Then start the container:
 
 ```bash
 cd deploy
 docker compose up -d
 ```
 
-To update to the latest image later:
-
-```bash
-docker compose pull && docker compose up -d
-```
+To update: `docker compose pull && docker compose up -d`
 
 Data and cache are stored in named Docker volumes (`podproxy-data`, `podproxy-cache`). To use host paths instead, replace the volume entries in `docker-compose.yml`:
 
@@ -59,10 +55,6 @@ volumes:
   - /mnt/nas/podproxy/data:/app/data
   - /mnt/nas/podproxy/cache:/app/cache
 ```
-
----
-
-## Deployment
 
 ### TrueNAS SCALE
 
@@ -97,13 +89,12 @@ Replace `192.168.1.100` with your server's IP or hostname. See the [Configuratio
 
 To update to the latest image, go to the stack in Portainer and click **Pull and redeploy**.
 
----
+### Nginx Reverse Proxy
 
-## Nginx Reverse Proxy
-Podproxy currently provides no auth and all the API endpoints are publicly accessible by default.
-If you plan to have your podproxy feeds publicly visible (required to work with some podcast apps like Apple Podcasts & Overcast), then you need to expose those endpoints while protecting the rest.
+Podproxy has no auth — all API endpoints are publicly accessible by default. If you plan to expose feeds publicly (required for some podcast apps like Apple Podcasts & Overcast), use a reverse proxy to allow read-only access to `/feeds/` and `/episodes/` while blocking everything else.
 
-If you don't know what this is, then just keep podproxy on your local network or tailnet.
+If you're keeping podproxy on your local network or tailnet, you can skip this.
+
 ```conf
 server {
     listen 443 ssl;
@@ -146,28 +137,7 @@ server {
 }
 ```
 
-## Contributing
-
-Commit messages must follow [Conventional Commits](https://www.conventionalcommits.org/) format (`type: description`). This is enforced in CI on pull requests.
-
-To enable the same check locally, point Git at the checked-in hooks directory:
-
-```bash
-git config core.hooksPath .githooks
-```
-
-Run tests before pushing:
-
-```bash
-go test ./...
-```
-
-
----
-
-## A Note on Hosting
-Most podcast CDNs rate-limit or block VPN IPs. If you're hosting behind a VPN and see `unexpected EOF` errors in the logs, that's likely why.
-
+> **Note:** Most podcast CDNs rate-limit or block VPN IPs. If your server's outbound traffic goes through a VPN and you see `unexpected EOF` errors in the logs, that's likely why.
 
 ---
 
@@ -177,7 +147,7 @@ Most podcast CDNs rate-limit or block VPN IPs. If you're hosting behind a VPN an
 
 Navigate to `http://<host>:8080/ui` in a browser:
 
-- **Add Feed** — paste an RSS URL; the server fetches it, slugifies the title, and returns a proxy URL.
+- **Add Feed** — paste an RSS URL; the server fetches it, generates a URL-safe slug from the title, and returns a proxy URL.
 - **Episodes** — view all episodes for a feed with their cache status.
 - **Refresh** — force a re-fetch of the feed's RSS to discover new episodes.
 - **Prefetch** — queue all un-cached episodes for background download.
@@ -229,4 +199,22 @@ docker run \
   -e PODPROXY_PREFETCH_CONCURRENCY=4 \
   -e PODPROXY_BACKUP_INTERVAL_MINUTES=60 \
   ...
+```
+
+---
+
+## Contributing
+
+Commit messages must follow [Conventional Commits](https://www.conventionalcommits.org/) format (`type: description`). This is enforced in CI on pull requests.
+
+To enable the same check locally, point Git at the checked-in hooks directory:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+Run tests before pushing:
+
+```bash
+go test ./...
 ```
