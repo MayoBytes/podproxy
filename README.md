@@ -62,7 +62,7 @@ volumes:
 
 ---
 
-## NAS Deployment
+## Deployment
 
 ### TrueNAS SCALE
 
@@ -71,16 +71,31 @@ volumes:
 3. In **Network Configuration** add the host port and container port you wish to use.
 4. In **Storage Configuration** use type "Host Path" (if using a path on your NAS) and add a host path for both `/app/data` (app database) and `/app/cache` (cached feeds and episodes).
 
-### Generic Docker host
+### Portainer
 
-Any machine with Docker installed:
+Use **Stacks → Add stack → Web editor** and paste this compose definition. Configure via environment variables instead of a config file:
 
-```bash
-git clone https://github.com/MayoBytes/podproxy && cd podproxy
-cp deploy/config.yaml.example deploy/config.yaml
-# edit deploy/config.yaml
-cd deploy && docker compose up -d
+```yaml
+services:
+  podproxy:
+    image: ghcr.io/mayobytes/podproxy:latest
+    ports:
+      - "8080:8080"
+    environment:
+      - PODPROXY_BASE_URL=http://192.168.1.100:8080
+    volumes:
+      - podproxy-data:/app/data
+      - podproxy-cache:/app/cache
+    restart: unless-stopped
+
+volumes:
+  podproxy-data:
+  podproxy-cache:
 ```
+
+Replace `192.168.1.100` with your server's IP or hostname. See the [Configuration](#configuration) table for additional environment variables.
+
+To update to the latest image, go to the stack in Portainer and click **Pull and redeploy**.
 
 ---
 
@@ -147,12 +162,11 @@ Run tests before pushing:
 go test ./...
 ```
 
-CI runs tests and commit linting on every pull request — both must pass before merging.
 
 ---
 
 ## A Note on Hosting
-If you're hosting this on a machine behind a VPN you're probably going to run into errors trying to download episodes from source CDN hosts. In my experience, most podcast CDNs rate-limit or block VPN IPs. This shows up in the logs as `unexpected EOF`. When hosting a server that reaches out from my home network, things work as expected, but connecting that server to a VPN caused a lot of issues downloading.
+Most podcast CDNs rate-limit or block VPN IPs. If you're hosting behind a VPN and see `unexpected EOF` errors in the logs, that's likely why.
 
 
 ---
@@ -172,7 +186,7 @@ Navigate to `http://<host>:8080/ui` in a browser:
 
 ### Podcast App Setup
 
-After adding a feed via the UI or API, copy the **Proxy URL** (shown on the Episodes page) and add it to your podcast app instead of the original RSS URL. The app behaves normally — it just fetches audio from your server instead of the origin CDN.
+After adding a feed via the UI or API, copy the **Proxy URL** (shown on the Episodes page) and add it to your podcast app instead of the original RSS URL.
 
 ### API
 
