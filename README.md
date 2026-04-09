@@ -60,8 +60,9 @@ volumes:
 
 1. Go to **Apps → Discover Apps → Custom App**.
 2. Use `ghcr.io/mayobytes/podproxy:latest` as the image.
-3. In **Network Configuration** add the host port and container port you wish to use.
-4. In **Storage Configuration** use type "Host Path" (if using a path on your NAS) and add a host path for both `/app/data` (app database) and `/app/cache` (cached feeds and episodes).
+3. Configure podproxy by adding environment variables in the **Container Configuration** section. ie: name: `PODPROXY_BASE_URL`, value: `http://192.168.1.100:8080`.
+4. In **Network Configuration** add the host port and container port you wish to use.
+5. In **Storage Configuration** use type "Host Path" (if using a path on your NAS) and add a host path for both `/app/data` (app database) and `/app/cache` (cached feeds and episodes).
 
 ### Portainer
 
