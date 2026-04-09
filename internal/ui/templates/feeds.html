@@ -76,14 +76,14 @@
   {{end}}
 
   <div class="card">
-    <table>
+    <table data-table-id="feeds">
       <thead>
         <tr>
-          <th>Feed</th>
-          <th>Episodes</th>
-          <th>Cached</th>
-          <th>Size</th>
-          <th>Last Fetched</th>
+          <th data-col="name" class="sortable">Feed<span class="sort-ind"></span></th>
+          <th data-col="episodes" class="sortable">Episodes<span class="sort-ind"></span></th>
+          <th data-col="cached" class="sortable">Cached<span class="sort-ind"></span></th>
+          <th data-col="size" class="sortable">Size<span class="sort-ind"></span></th>
+          <th data-col="fetched" class="sortable">Last Fetched<span class="sort-ind"></span></th>
           <th>Actions</th>
         </tr>
       </thead>
@@ -91,7 +91,7 @@
         {{if .Feeds}}
           {{range .Feeds}}
           <tr>
-            <td>
+            <td data-sort="{{.Feed.Title}}">
               <a class="feed-title" href="/ui/feeds/{{.Feed.ID}}/episodes">{{.Feed.Title}}</a>
               <span class="feed-url" title="{{.Feed.OriginalURL}}">{{.Feed.OriginalURL}}</span>
               <span class="proxy-url-row">
@@ -99,10 +99,10 @@
                 <button class="btn btn-sm btn-secondary copy-btn" data-url="{{$.BaseURL}}/feeds/{{.Feed.ID}}.rss">Copy</button>
               </span>
             </td>
-            <td>{{.EpisodeCount}}</td>
-            <td>{{.CachedCount}}</td>
-            <td>{{humanSize .TotalBytes}}</td>
-            <td>{{humanTime .Feed.LastFetchedAt}}</td>
+            <td data-sort="{{.EpisodeCount}}">{{.EpisodeCount}}</td>
+            <td data-sort="{{.CachedCount}}">{{.CachedCount}}</td>
+            <td data-sort="{{.TotalBytes}}">{{humanSize .TotalBytes}}</td>
+            <td data-sort="{{unixTime .Feed.LastFetchedAt}}">{{humanTime .Feed.LastFetchedAt}}</td>
             <td>
               <div class="actions">
                 <button class="btn btn-sm btn-secondary"

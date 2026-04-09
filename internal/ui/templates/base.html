@@ -142,6 +142,13 @@
     .col-check { display: none; width: 2rem; text-align: center; }
     .select-mode .col-check { display: table-cell; }
 
+    /* Sortable table headers */
+    th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+    th.sortable:hover { color: var(--text); background: var(--border-muted); }
+    th.sort-active { color: var(--text); }
+    .sort-ind { font-size: 0.7em; margin-left: 0.2em; opacity: 0.6; }
+    th.sort-active .sort-ind { opacity: 1; }
+
     /* HTMX loading indicator */
     .htmx-indicator { opacity: 0; font-size: 0.8rem; color: var(--text-muted); transition: opacity 200ms; }
     .htmx-request .htmx-indicator,
@@ -192,6 +199,66 @@
       if (cacheBtn)  cacheBtn.disabled  = !hasUncached;
       if (deleteBtn) deleteBtn.disabled = !hasCached;
     }
+
+    // Table column sorting (delegated — survives HTMX swaps)
+    (function() {
+      var sortState = {};
+
+      function tableId(table) {
+        return table.dataset.tableId || 'default';
+      }
+
+      function applySort(table, col, dir) {
+        var th = table.querySelector('th[data-col="' + col + '"]');
+        if (!th) return;
+        table.querySelectorAll('th[data-col]').forEach(function(h) {
+          var ind = h.querySelector('.sort-ind');
+          if (h.dataset.col === col) {
+            if (ind) ind.textContent = dir === 1 ? ' ▲' : ' ▼';
+            h.classList.add('sort-active');
+          } else {
+            if (ind) ind.textContent = '';
+            h.classList.remove('sort-active');
+          }
+        });
+        var tbody = table.querySelector('tbody');
+        if (!tbody) return;
+        var colIdx = th.cellIndex;
+        var rows = Array.from(tbody.querySelectorAll('tr:not(.empty-row)'));
+        rows.sort(function(a, b) {
+          var aVal = (a.cells[colIdx] && a.cells[colIdx].dataset.sort) || '';
+          var bVal = (b.cells[colIdx] && b.cells[colIdx].dataset.sort) || '';
+          var aNum = parseFloat(aVal), bNum = parseFloat(bVal);
+          if (!isNaN(aNum) && !isNaN(bNum)) return (aNum - bNum) * dir;
+          return aVal.localeCompare(bVal, undefined, {sensitivity: 'base'}) * dir;
+        });
+        rows.forEach(function(r) { tbody.appendChild(r); });
+      }
+
+      document.addEventListener('click', function(e) {
+        var th = e.target.closest('th[data-col]');
+        if (!th) return;
+        var col = th.dataset.col;
+        var table = th.closest('table');
+        if (!table) return;
+        var id = tableId(table);
+        if (!sortState[id]) sortState[id] = { col: null, dir: 1 };
+        var state = sortState[id];
+        state.dir = state.col === col ? state.dir * -1 : 1;
+        state.col = col;
+        applySort(table, state.col, state.dir);
+      });
+
+      // Re-apply sort after HTMX swaps (e.g. the 4s episode-list poll)
+      document.addEventListener('htmx:afterSwap', function(e) {
+        var root = e.detail.target;
+        var tables = root.tagName === 'TABLE' ? [root] : Array.from(root.querySelectorAll('table[data-table-id]'));
+        tables.forEach(function(table) {
+          var state = sortState[tableId(table)];
+          if (state && state.col) applySort(table, state.col, state.dir);
+        });
+      });
+    })();
 
     document.addEventListener('click', function(e) {
       var btn = e.target.closest('.copy-btn');

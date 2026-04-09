@@ -34,6 +34,7 @@ func init() {
 		"humanTime":     humanTime,
 		"humanDuration": humanDuration,
 		"cacheClass":    cacheStatusClass,
+		"unixTime":      unixTime,
 	}
 	feedsTmpl = template.Must(
 		template.New("").Funcs(funcs).ParseFS(tmplFS,
@@ -629,6 +630,13 @@ func humanDuration(secs int) string {
 		return fmt.Sprintf("%dh%02dm", h, m)
 	}
 	return fmt.Sprintf("%dm", m)
+}
+
+func unixTime(t *time.Time) int64 {
+	if t == nil {
+		return -1
+	}
+	return t.Unix()
 }
 
 func cacheStatusClass(status string) string {

@@ -48,15 +48,15 @@
   </div>
 
   <div class="card">
-    <table>
+    <table data-table-id="episodes">
       <thead>
         <tr>
           <th class="col-check"></th>
-          <th>Episode</th>
-          <th>Published</th>
-          <th>Status</th>
-          <th>Size</th>
-          <th>Duration</th>
+          <th data-col="title" class="sortable">Episode<span class="sort-ind"></span></th>
+          <th data-col="pubdate" class="sortable">Published<span class="sort-ind"></span></th>
+          <th data-col="status" class="sortable">Status<span class="sort-ind"></span></th>
+          <th data-col="size" class="sortable">Size<span class="sort-ind"></span></th>
+          <th data-col="duration" class="sortable">Duration<span class="sort-ind"></span></th>
           <th>Actions</th>
         </tr>
       </thead>
@@ -71,11 +71,11 @@
               <input type="checkbox" name="ep" value="{{.URLID}}" class="bulk-ep-check bulk-ep-cached" onchange="updateBulkButtons()">
               {{end}}
             </td>
-            <td>{{.Title}}</td>
-            <td>{{humanTime .PubDate}}</td>
-            <td><span class="badge {{cacheClass .CacheStatus}}">{{.CacheStatus}}</span></td>
-            <td>{{humanSize .SizeBytes}}</td>
-            <td>{{humanDuration .DurationSec}}</td>
+            <td data-sort="{{.Title}}">{{.Title}}</td>
+            <td data-sort="{{unixTime .PubDate}}">{{humanTime .PubDate}}</td>
+            <td data-sort="{{.CacheStatus}}"><span class="badge {{cacheClass .CacheStatus}}">{{.CacheStatus}}</span></td>
+            <td data-sort="{{.SizeBytes}}">{{humanSize .SizeBytes}}</td>
+            <td data-sort="{{.DurationSec}}">{{humanDuration .DurationSec}}</td>
             <td>
               {{if or (eq .CacheStatus "none") (eq .CacheStatus "failed")}}
               <button type="button" class="btn btn-sm btn-secondary"
