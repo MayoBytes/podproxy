@@ -42,6 +42,7 @@ POST   /api/backups                     Trigger an immediate database backup
 GET    /api/backups                     List existing backups (name, size, created_at)
 POST   /ui/feeds/:id/bulk-cache         UI: queue selected uncached episodes for download
 POST   /ui/feeds/:id/bulk-delete        UI: delete cached files for selected episodes
+POST   /ui/feeds/:id/refresh-artwork    UI: re-download channel artwork from upstream
 GET    /feeds/:id.rss                   Proxied RSS feed (used by podcast apps)
 GET    /artwork/:id                     Cached channel artwork image for a feed
 GET    /episodes/:feed_id/:ep_id        Episode audio proxy / cache server
@@ -77,7 +78,7 @@ Multi-arch image (amd64 + arm64). Volumes: `podproxy-data` (SQLite) and `podprox
 - **Feed poller:** Single goroutine ticks every minute, checks which feeds are past their `refresh_interval_minutes`. Regenerates RSS cache when new episodes arrive.
 - **HTTP/2 disabled** on upstream transport to prevent CDN connection resets.
 - **Bulk select mode:** UI episode list has an opt-in "Select" button that reveals checkboxes and bulk toolbar. "Cache Selected" targets `none`/`failed` episodes; "Delete Cached" targets `cached` episodes only. Both are enforced server-side — wrong-status episodes are silently skipped.
-- **Artwork caching:** Channel artwork is downloaded and stored on disk (best-effort) on feed add, refresh, and first `GET /feeds/:id.rss`. The `itunes:image href` in the rewritten RSS is pointed at `/artwork/:id` only when the file was successfully cached — so the endpoint never returns 404 for a feed that has been proxied. Artwork is intentionally not re-downloaded on subsequent calls (staleness is acceptable; the goal is offline resilience when the upstream host goes away). Deleted with the feed.
+- **Artwork caching:** Channel artwork is downloaded and stored on disk (best-effort) on feed add, refresh, and first `GET /feeds/:id.rss`. The `itunes:image href` in the rewritten RSS is pointed at `/artwork/:id` only when the file was successfully cached — so the endpoint never returns 404 for a feed that has been proxied. Artwork is not re-downloaded automatically (staleness is acceptable; the goal is offline resilience when the upstream host goes away). A dedicated `POST /ui/feeds/:id/refresh-artwork` endpoint forces a fresh download on demand: it removes the existing file then calls `CacheArtwork` with the live upstream URL. `GET /artwork/:id` sets `Cache-Control: no-cache` so browsers revalidate after a refresh. Deleted with the feed.
 - **Database backups:** `VACUUM INTO` produces a consistent, defragmented snapshot safe to take while live. `backup.Manager` handles on-demand creation, rotation (keeps newest N, deletes tail), and an optional scheduled ticker. `Stop()` uses `sync.Once` to allow safe multiple calls.
 
 ## Roadmap

@@ -2,10 +2,12 @@ package ui_test
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -295,6 +297,29 @@ func TestUIDeleteFeed_NotFound_ShowsError(t *testing.T) {
 	}
 }
 
+func TestUIDeleteFeed_RemovesArtworkFile(t *testing.T) {
+	env := newUITestEnv(t)
+	env.doForm("POST", "/ui/feeds/add", url.Values{"url": {env.rssSrv.URL}})
+
+	feedsDir := filepath.Join(env.cfg.Storage.CacheDir, "feeds")
+	if err := os.MkdirAll(feedsDir, 0o755); err != nil {
+		t.Fatalf("mkdir feedsDir: %v", err)
+	}
+	artPath := filepath.Join(feedsDir, "ui-test-podcast-artwork.jpg")
+	if err := os.WriteFile(artPath, []byte("fake-art"), 0o644); err != nil {
+		t.Fatalf("write artwork: %v", err)
+	}
+
+	w := env.do("DELETE", "/ui/feeds/ui-test-podcast")
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d\nbody: %s", w.Code, w.Body.String())
+	}
+
+	if _, err := os.Stat(artPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("artwork file should have been deleted on feed delete, stat err: %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // POST /ui/feeds/{id}/refresh
 // ---------------------------------------------------------------------------
@@ -320,6 +345,104 @@ func TestUIRefreshFeed_NotFound_ShowsError(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "alert-err") {
 		t.Error("refreshing non-existent feed should render error alert")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// POST /ui/feeds/{id}/refresh-artwork
+// ---------------------------------------------------------------------------
+
+func TestUIRefreshArtwork_NotFound_ShowsError(t *testing.T) {
+	env := newUITestEnv(t)
+	w := env.doForm("POST", "/ui/feeds/nonexistent/refresh-artwork", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200 (rendered fragment), got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "alert-err") {
+		t.Error("refreshing artwork for non-existent feed should render error alert")
+	}
+}
+
+func TestUIRefreshArtwork_NoArtworkURL_ShowsMessage(t *testing.T) {
+	env := newUITestEnv(t)
+	// uiTestRSS has no itunes:image, so ArtworkURL will be empty.
+	env.doForm("POST", "/ui/feeds/add", url.Values{"url": {env.rssSrv.URL}})
+
+	w := env.doForm("POST", "/ui/feeds/ui-test-podcast/refresh-artwork", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200 (rendered fragment), got %d", w.Code)
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "alert-err") {
+		t.Error("missing artwork URL should not be an error")
+	}
+	if !strings.Contains(body, "no artwork") {
+		t.Errorf("response should mention no artwork URL; got: %s", body)
+	}
+}
+
+func TestUIRefreshArtwork_RefreshesArtworkFile(t *testing.T) {
+	artSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		w.Write([]byte("artwork-bytes"))
+	}))
+	t.Cleanup(artSrv.Close)
+
+	rssSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/rss+xml")
+		fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+  <channel>
+    <title>Art Refresh Test</title>
+    <link>https://example.com</link>
+    <description>Test</description>
+    <itunes:image href="%s/cover.png"/>
+    <item>
+      <title>Episode One</title>
+      <guid>art-refresh-001</guid>
+      <enclosure url="https://cdn.example.com/ep1.mp3" type="audio/mpeg" length="100"/>
+    </item>
+  </channel>
+</rss>`, artSrv.URL)
+	}))
+	t.Cleanup(rssSrv.Close)
+
+	database, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+
+	cfg := &config.Config{
+		Server:   config.ServerConfig{Port: 8080, BaseURL: "http://proxy.local"},
+		Storage:  config.StorageConfig{CacheDir: t.TempDir()},
+		Defaults: config.DefaultsConfig{RefreshIntervalMinutes: 60},
+	}
+	mux := http.NewServeMux()
+	ui.RegisterRoutes(mux, database, feed.NewFetcher(cfg), nil, cfg, backup.New(database, cfg))
+	env := &uiTestEnv{db: database, mux: mux, cfg: cfg, rssSrv: rssSrv}
+
+	env.doForm("POST", "/ui/feeds/add", url.Values{"url": {rssSrv.URL}})
+
+	w := env.doForm("POST", "/ui/feeds/art-refresh-test/refresh-artwork", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d\nbody: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "Refreshed artwork") {
+		t.Errorf("response should confirm artwork refresh; got: %s", w.Body.String())
+	}
+
+	feedsDir := filepath.Join(cfg.Storage.CacheDir, "feeds")
+	artPath, ok := feed.ArtworkPath(feedsDir, "art-refresh-test")
+	if !ok {
+		t.Fatal("artwork file should exist after refresh")
+	}
+	data, err := os.ReadFile(artPath)
+	if err != nil {
+		t.Fatalf("read artwork file: %v", err)
+	}
+	if string(data) != "artwork-bytes" {
+		t.Errorf("artwork content: want %q, got %q", "artwork-bytes", string(data))
 	}
 }
 

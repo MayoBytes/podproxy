@@ -55,6 +55,7 @@ func RegisterRoutes(mux *http.ServeMux, database *db.DB, fetcher *feed.Fetcher, 
 	mux.HandleFunc("POST /ui/feeds/add", h.addFeed)
 	mux.HandleFunc("DELETE /ui/feeds/{id}", h.deleteFeed)
 	mux.HandleFunc("POST /ui/feeds/{id}/refresh", h.refreshFeed)
+	mux.HandleFunc("POST /ui/feeds/{id}/refresh-artwork", h.refreshArtwork)
 	mux.HandleFunc("POST /ui/feeds/{id}/toggle-autoprefetch", h.toggleAutoPrefetch)
 	mux.HandleFunc("POST /ui/feeds/{id}/bulk-cache", h.bulkCacheEpisodes)
 	mux.HandleFunc("POST /ui/feeds/{id}/bulk-delete", h.bulkDeleteEpisodes)
@@ -154,9 +155,10 @@ func (h *uiHandler) addFeed(w http.ResponseWriter, r *http.Request) {
 	feedCopy := *tmpResult.Feed
 	feedCopy.ID = feedID
 	result := &feed.FetchResult{
-		Feed:     &feedCopy,
-		Episodes: tmpResult.Episodes,
-		RawXML:   tmpResult.RawXML,
+		Feed:       &feedCopy,
+		Episodes:   tmpResult.Episodes,
+		RawXML:     tmpResult.RawXML,
+		ArtworkURL: tmpResult.ArtworkURL,
 	}
 	for _, ep := range result.Episodes {
 		ep.ID = feedID + "/" + strings.TrimPrefix(ep.ID, "_tmp/")
@@ -174,6 +176,13 @@ func (h *uiHandler) addFeed(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	_ = h.db.UpdateFeedFetchedAt(feedID, time.Now())
+
+	if result.ArtworkURL != "" {
+		feedsDir := filepath.Join(h.cfg.Storage.CacheDir, "feeds")
+		if _, err := h.fetcher.CacheArtwork(result.ArtworkURL, feedsDir, feedID); err != nil {
+			log.Printf("ui: add feed %s: cache artwork: %v", feedID, err)
+		}
+	}
 
 	h.renderFeedList(w, fmt.Sprintf("Added \"%s\" (%d episode(s)).", result.Feed.Title, len(result.Episodes)), false)
 }
@@ -198,9 +207,15 @@ func (h *uiHandler) deleteFeed(w http.ResponseWriter, r *http.Request) {
 	if err := os.RemoveAll(episodeDir); err != nil {
 		log.Printf("ui: remove episode cache dir %s: %v", episodeDir, err)
 	}
-	feedXML := filepath.Join(h.cfg.Storage.CacheDir, "feeds", id+".rss")
+	feedsDir := filepath.Join(h.cfg.Storage.CacheDir, "feeds")
+	feedXML := filepath.Join(feedsDir, id+".rss")
 	if err := os.Remove(feedXML); err != nil && !errors.Is(err, os.ErrNotExist) {
 		log.Printf("ui: remove feed xml cache %s: %v", feedXML, err)
+	}
+	if artworkPath, ok := feed.ArtworkPath(feedsDir, id); ok {
+		if err := os.Remove(artworkPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Printf("ui: remove feed artwork %s: %v", artworkPath, err)
+		}
 	}
 	h.renderFeedList(w, fmt.Sprintf("Deleted feed %q.", id), false)
 }
@@ -232,6 +247,41 @@ func (h *uiHandler) refreshFeed(w http.ResponseWriter, r *http.Request) {
 	h.renderFeedList(w,
 		fmt.Sprintf("Refreshed \"%s\" — %d episode(s) seen.", f.Title, len(result.Episodes)),
 		false)
+}
+
+func (h *uiHandler) refreshArtwork(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	f, err := h.db.GetFeed(id)
+	if errors.Is(err, db.ErrNotFound) {
+		h.renderFeedList(w, "Feed not found.", true)
+		return
+	}
+	if err != nil {
+		h.renderFeedList(w, "Database error.", true)
+		return
+	}
+
+	result, err := h.fetcher.Fetch(f.ID, f.OriginalURL)
+	if err != nil {
+		h.renderFeedList(w, fmt.Sprintf("Failed to fetch feed: %v", err), true)
+		return
+	}
+	if result.ArtworkURL == "" {
+		h.renderFeedList(w, fmt.Sprintf("Feed %q has no artwork URL.", f.Title), false)
+		return
+	}
+
+	feedsDir := filepath.Join(h.cfg.Storage.CacheDir, "feeds")
+	if existing, ok := feed.ArtworkPath(feedsDir, id); ok {
+		if err := os.Remove(existing); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Printf("ui: refresh artwork: remove %s: %v", existing, err)
+		}
+	}
+	if _, err := h.fetcher.CacheArtwork(result.ArtworkURL, feedsDir, id); err != nil {
+		h.renderFeedList(w, fmt.Sprintf("Failed to refresh artwork for %q: %v", f.Title, err), true)
+		return
+	}
+	h.renderFeedList(w, fmt.Sprintf("Refreshed artwork for %q.", f.Title), false)
 }
 
 func (h *uiHandler) toggleAutoPrefetch(w http.ResponseWriter, r *http.Request) {

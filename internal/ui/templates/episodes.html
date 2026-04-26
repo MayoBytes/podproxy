@@ -1,15 +1,29 @@
 {{define "body"}}
 <a href="/ui" class="back">← Back to Feeds</a>
 
-<h1>{{.Feed.Title}}</h1>
-
-<p class="feed-meta">
-  Proxy URL (add to your podcast app):
-  <span class="proxy-url-row">
-    <code class="proxy-url" title="{{.ProxyURL}}">{{.ProxyURL}}</code>
-    <button class="btn btn-sm btn-secondary copy-btn" data-url="{{.ProxyURL}}">Copy</button>
-  </span>
-</p>
+<div class="feed-header">
+  <img class="feed-art feed-art-lg" src="/artwork/{{.Feed.ID}}" alt="" loading="lazy" onerror="this.style.display='none'">
+  <div>
+    <h1>{{.Feed.Title}}</h1>
+    <p class="feed-meta">
+      Proxy URL (add to your podcast app):
+      <span class="proxy-url-row">
+        <code class="proxy-url" title="{{.ProxyURL}}">{{.ProxyURL}}</code>
+        <button class="btn btn-sm btn-secondary copy-btn" data-url="{{.ProxyURL}}">Copy</button>
+      </span>
+    </p>
+    <div class="feed-actions">
+      <button class="btn btn-sm btn-secondary"
+              hx-post="/ui/feeds/{{.Feed.ID}}/refresh"
+              hx-swap="none"
+              hx-on::after-request="if(event.detail.successful) window.location.reload()">Refresh Feed</button>
+      <button class="btn btn-sm btn-secondary"
+              hx-post="/ui/feeds/{{.Feed.ID}}/refresh-artwork"
+              hx-swap="none"
+              hx-on::after-request="if(event.detail.successful) window.location.reload()">Refresh Artwork</button>
+    </div>
+  </div>
+</div>
 
 {{template "episode-list" .}}
 {{end}}

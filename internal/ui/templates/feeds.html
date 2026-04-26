@@ -92,12 +92,17 @@
           {{range .Feeds}}
           <tr>
             <td data-sort="{{.Feed.Title}}">
-              <a class="feed-title" href="/ui/feeds/{{.Feed.ID}}/episodes">{{.Feed.Title}}</a>
-              <span class="feed-url" title="{{.Feed.OriginalURL}}">{{.Feed.OriginalURL}}</span>
-              <span class="proxy-url-row">
-                <code class="proxy-url" title="{{$.BaseURL}}/feeds/{{.Feed.ID}}.rss">{{$.BaseURL}}/feeds/{{.Feed.ID}}.rss</code>
-                <button class="btn btn-sm btn-secondary copy-btn" data-url="{{$.BaseURL}}/feeds/{{.Feed.ID}}.rss">Copy</button>
-              </span>
+              <div class="feed-name-cell">
+                <img class="feed-art" src="/artwork/{{.Feed.ID}}" alt="" loading="lazy" onerror="this.style.display='none'">
+                <div>
+                  <a class="feed-title" href="/ui/feeds/{{.Feed.ID}}/episodes">{{.Feed.Title}}</a>
+                  <span class="feed-url" title="{{.Feed.OriginalURL}}">{{.Feed.OriginalURL}}</span>
+                  <span class="proxy-url-row">
+                    <code class="proxy-url" title="{{$.BaseURL}}/feeds/{{.Feed.ID}}.rss">{{$.BaseURL}}/feeds/{{.Feed.ID}}.rss</code>
+                    <button class="btn btn-sm btn-secondary copy-btn" data-url="{{$.BaseURL}}/feeds/{{.Feed.ID}}.rss">Copy</button>
+                  </span>
+                </div>
+              </div>
             </td>
             <td data-sort="{{.EpisodeCount}}">{{.EpisodeCount}}</td>
             <td data-sort="{{.CachedCount}}">{{.CachedCount}}</td>
@@ -108,7 +113,12 @@
                 <button class="btn btn-sm btn-secondary"
                         hx-post="/ui/feeds/{{.Feed.ID}}/refresh"
                         hx-target="#feed-list"
-                        hx-swap="outerHTML">Refresh</button>
+                        hx-swap="outerHTML">Refresh Feed</button>
+                <button class="btn btn-sm btn-secondary"
+                        hx-post="/ui/feeds/{{.Feed.ID}}/refresh-artwork"
+                        hx-target="#feed-list"
+                        hx-swap="outerHTML"
+                        title="Re-download the channel artwork from the upstream feed">Refresh Artwork</button>
                 <button class="btn btn-sm {{if .Feed.AutoPrefetch}}btn-primary{{else}}btn-secondary{{end}}"
                         hx-post="/ui/feeds/{{.Feed.ID}}/toggle-autoprefetch"
                         hx-target="#feed-list"

@@ -160,7 +160,8 @@ Navigate to `http://<host>:8080/ui` in a browser:
 
 - **Add Feed** — paste an RSS URL; the server fetches it, generates a URL-safe slug from the title, and returns a proxy URL.
 - **Episodes** — view all episodes for a feed with their cache status.
-- **Refresh** — force a re-fetch of the feed's RSS to discover new episodes.
+- **Refresh Feed** — force a re-fetch of the feed's RSS to discover new episodes.
+- **Refresh Artwork** — re-download the channel thumbnail from upstream; replaces the locally cached copy.
 - **Prefetch** — queue all un-cached episodes for background download.
 - **Cache Selected / Delete Cached** — bulk mode (toggle via "Select") lets you pick individual episodes to cache or purge from disk.
 - **Delete** — remove a feed and all its metadata.

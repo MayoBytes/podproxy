@@ -209,6 +209,7 @@ func (h *handler) serveArtwork(w http.ResponseWriter, r *http.Request) {
 	if ct != "" {
 		w.Header().Set("Content-Type", ct)
 	}
+	w.Header().Set("Cache-Control", "no-cache")
 	var modTime time.Time
 	if info, err := f.Stat(); err == nil {
 		modTime = info.ModTime()

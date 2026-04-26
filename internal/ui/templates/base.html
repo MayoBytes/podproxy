@@ -102,6 +102,8 @@
     .empty-row td { text-align: center; padding: 2.5rem; color: var(--text-muted); }
 
     /* Feed title cell */
+    .feed-name-cell { display: flex; align-items: flex-start; gap: 0.75rem; }
+    .feed-art { width: 48px; height: 48px; border-radius: 6px; object-fit: cover; flex-shrink: 0; }
     .feed-title { font-weight: 500; }
     .feed-url { font-size: 0.75rem; color: var(--text-muted); max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
     .proxy-url-row { display: flex; align-items: center; gap: 0.35rem; margin-top: 0.25rem; }
@@ -131,6 +133,13 @@
 
     /* Feed meta on episodes page */
     .feed-meta { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1.25rem; }
+
+    /* Episodes page feed header (artwork + title + actions) */
+    .feed-header { display: flex; align-items: flex-start; gap: 1rem; margin-bottom: 1.25rem; }
+    .feed-header h1 { margin-bottom: 0.35rem; }
+    .feed-header .feed-meta { margin-bottom: 0.5rem; }
+    .feed-art-lg { width: 80px; height: 80px; border-radius: 8px; object-fit: cover; flex-shrink: 0; }
+    .feed-actions { display: flex; gap: 0.35rem; }
     .feed-meta code { background: var(--code-bg); padding: 0.15em 0.4em; border-radius: 4px; font-size: 0.82rem; color: var(--text); }
 
     /* Episode list select mode */

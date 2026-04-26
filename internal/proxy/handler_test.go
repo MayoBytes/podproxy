@@ -223,6 +223,9 @@ func TestServeArtwork_ServesFileWithCorrectContentType(t *testing.T) {
 	if !strings.Contains(ct, "image/png") {
 		t.Errorf("Content-Type: want image/png, got %q", ct)
 	}
+	if cc := w.Header().Get("Cache-Control"); cc != "no-cache" {
+		t.Errorf("Cache-Control: want no-cache, got %q", cc)
+	}
 	if w.Body.String() != string(imgData) {
 		t.Errorf("body mismatch: got %q", w.Body.String())
 	}
