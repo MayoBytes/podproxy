@@ -1,12 +1,15 @@
 package feed
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -33,9 +36,10 @@ func NewFetcher(cfg *config.Config) *Fetcher {
 
 // FetchResult contains parsed feed data ready to store.
 type FetchResult struct {
-	Feed     *db.Feed
-	Episodes []*db.Episode
-	RawXML   []byte
+	Feed       *db.Feed
+	Episodes   []*db.Episode
+	RawXML     []byte
+	ArtworkURL string // channel-level image URL, may be empty
 }
 
 // Fetch downloads and parses an RSS feed URL, returning structured data for DB
@@ -70,6 +74,11 @@ func (f *Fetcher) Fetch(feedID, rawURL string) (*FetchResult, error) {
 		AutoPrefetch:           f.cfg.Defaults.AutoPrefetch,
 	}
 
+	var artworkURL string
+	if parsed.ITunesExt != nil && parsed.ITunesExt.Image != "" {
+		artworkURL = parsed.ITunesExt.Image
+	}
+
 	episodes := make([]*db.Episode, 0, len(parsed.Items))
 	for _, item := range parsed.Items {
 		ep := itemToEpisode(feedID, item)
@@ -78,7 +87,7 @@ func (f *Fetcher) Fetch(feedID, rawURL string) (*FetchResult, error) {
 		}
 	}
 
-	return &FetchResult{Feed: feed, Episodes: episodes, RawXML: data}, nil
+	return &FetchResult{Feed: feed, Episodes: episodes, RawXML: data, ArtworkURL: artworkURL}, nil
 }
 
 func itemToEpisode(feedID string, item *gofeed.Item) *db.Episode {
@@ -161,6 +170,87 @@ func EpisodeFileExt(rawURL string) string {
 	return ""
 }
 
+// ArtworkPath returns the path of the cached artwork file for feedID in dir,
+// or ("", false) if none exists.
+func ArtworkPath(dir, feedID string) (string, bool) {
+	matches, _ := filepath.Glob(filepath.Join(dir, feedID+"-artwork.*"))
+	if len(matches) == 0 {
+		return "", false
+	}
+	return matches[0], true
+}
+
+// CacheArtwork downloads the artwork at artworkURL and stores it in dir as
+// "{feedID}-artwork{ext}". Returns the cached path. If a file already exists,
+// it is returned without re-downloading — artwork is intentionally not refreshed
+// on subsequent calls. The primary goal is offline resilience (serving artwork
+// after the upstream host goes away), so staleness is acceptable.
+func (f *Fetcher) CacheArtwork(artworkURL, dir, feedID string) (string, error) {
+	if path, ok := ArtworkPath(dir, feedID); ok {
+		return path, nil
+	}
+
+	resp, err := f.client.Get(artworkURL)
+	if err != nil {
+		return "", fmt.Errorf("fetch artwork: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("artwork returned %d", resp.StatusCode)
+	}
+
+	ext := artworkExt(resp.Header.Get("Content-Type"), artworkURL)
+	destPath := filepath.Join(dir, feedID+"-artwork"+ext)
+
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", fmt.Errorf("mkdir: %w", err)
+	}
+	tmp, err := os.CreateTemp(dir, ".artwork-tmp-")
+	if err != nil {
+		return "", fmt.Errorf("create temp: %w", err)
+	}
+	tmpPath := tmp.Name()
+	committed := false
+	defer func() {
+		tmp.Close()
+		if !committed {
+			os.Remove(tmpPath)
+		}
+	}()
+
+	const maxArtworkBytes = 10 << 20 // 10 MB
+	if _, err := io.Copy(tmp, io.LimitReader(resp.Body, maxArtworkBytes)); err != nil {
+		return "", fmt.Errorf("write artwork: %w", err)
+	}
+	if err := os.Rename(tmpPath, destPath); err != nil {
+		return "", fmt.Errorf("rename: %w", err)
+	}
+	committed = true
+	return destPath, nil
+}
+
+// artworkExt returns a file extension for an image, preferring the
+// Content-Type header and falling back to the URL path.
+func artworkExt(contentType, rawURL string) string {
+	ct := strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0])
+	if exts, err := mime.ExtensionsByType(ct); err == nil && len(exts) > 0 {
+		// mime.ExtensionsByType returns extensions in alphabetical order;
+		// prefer .jpg over .jfif/.jpe for image/jpeg.
+		for _, e := range exts {
+			if e == ".jpg" || e == ".png" || e == ".webp" || e == ".gif" || e == ".avif" {
+				return e
+			}
+		}
+		return exts[len(exts)-1]
+	}
+	if u, err := url.Parse(rawURL); err == nil {
+		if ext := filepath.Ext(u.Path); ext != "" {
+			return ext
+		}
+	}
+	return ".jpg"
+}
+
 // Slugify converts a feed title into a URL-safe identifier.
 func Slugify(s string) string {
 	s = strings.ToLower(s)
@@ -225,7 +315,9 @@ var mimeToExt = map[string]string{
 // to the proxy server, using the episode URL IDs from the DB. It also rewrites
 // the atom:link rel="self" href to the proxy feed URL so that podcast clients
 // (e.g. Apple Podcasts) do not follow the original upstream feed URL.
-func RewriteXML(raw []byte, feedID string, urlMap map[string]string, baseURL string) []byte {
+// If artworkURL is non-empty, any itunes:image href matching it is rewritten to
+// the local artwork endpoint.
+func RewriteXML(raw []byte, feedID string, urlMap map[string]string, baseURL, artworkURL string) []byte {
 	result := rewritePattern.ReplaceAllFunc(raw, func(match []byte) []byte {
 		urlSub := urlAttrPattern.FindSubmatch(match)
 		if urlSub == nil {
@@ -255,6 +347,21 @@ func RewriteXML(raw []byte, feedID string, urlMap map[string]string, baseURL str
 	// directory index, regardless of what the upstream feed says.
 	result = itunesBlockPattern.ReplaceAll(result, nil)
 	result = channelOpenPattern.ReplaceAllLiteral(result, []byte("<channel><itunes:block>Yes</itunes:block>"))
+
+	if artworkURL != "" {
+		artworkProxy := fmt.Sprintf("%s/artwork/%s", baseURL, feedID)
+		// Try both the decoded URL and the XML-encoded form (&amp;) because gofeed
+		// returns decoded URLs while the raw XML bytes may still have &amp;.
+		needles := []string{artworkURL}
+		if encoded := strings.ReplaceAll(artworkURL, "&", "&amp;"); encoded != artworkURL {
+			needles = append(needles, encoded)
+		}
+		for _, needle := range needles {
+			result = bytes.ReplaceAll(result,
+				[]byte(`href="`+needle+`"`),
+				[]byte(`href="`+artworkProxy+`"`))
+		}
+	}
 
 	return result
 }

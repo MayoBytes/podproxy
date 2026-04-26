@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -254,6 +255,30 @@ func TestDeleteFeed_NotFound_Returns404(t *testing.T) {
 	w := env.do("DELETE", "/api/feeds/nonexistent", "")
 	if w.Code != http.StatusNotFound {
 		t.Errorf("want 404, got %d", w.Code)
+	}
+}
+
+func TestDeleteFeed_RemovesArtworkFile(t *testing.T) {
+	env := newAPITestEnv(t)
+	env.cfg.Storage.CacheDir = t.TempDir()
+
+	env.do("POST", "/api/feeds", `{"url":"`+env.rssSrv.URL+`"}`)
+
+	feedsDir := filepath.Join(env.cfg.Storage.CacheDir, "feeds")
+	if err := os.MkdirAll(feedsDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	artworkPath := filepath.Join(feedsDir, "my-test-podcast-artwork.jpg")
+	if err := os.WriteFile(artworkPath, []byte("fake-img"), 0644); err != nil {
+		t.Fatalf("write artwork: %v", err)
+	}
+
+	w := env.do("DELETE", "/api/feeds/my-test-podcast", "")
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("want 204, got %d", w.Code)
+	}
+	if _, err := os.Stat(artworkPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("artwork file should have been removed after delete, stat err: %v", err)
 	}
 }
 

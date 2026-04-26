@@ -3,6 +3,8 @@ package feed_test
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -71,7 +73,7 @@ func TestRewriteXML_ReplacesEnclosureURL(t *testing.T) {
 	urlMap := map[string]string{
 		"https://cdn.example.com/ep1.mp3": "deadbeef",
 	}
-	got := string(feed.RewriteXML(raw, "mypod", urlMap, "http://proxy.local:8080"))
+	got := string(feed.RewriteXML(raw, "mypod", urlMap, "http://proxy.local:8080", ""))
 	if !strings.Contains(got, `url="http://proxy.local:8080/episodes/mypod/deadbeef.mp3"`) {
 		t.Errorf("enclosure URL not rewritten; output:\n%s", got)
 	}
@@ -85,7 +87,7 @@ func TestRewriteXML_ReplacesMediaContentURL(t *testing.T) {
 	urlMap := map[string]string{
 		"https://cdn.example.com/ep1.mp3": "abcd1234",
 	}
-	got := string(feed.RewriteXML(raw, "pod", urlMap, "http://proxy:8080"))
+	got := string(feed.RewriteXML(raw, "pod", urlMap, "http://proxy:8080", ""))
 	if !strings.Contains(got, `url="http://proxy:8080/episodes/pod/abcd1234.mp3"`) {
 		t.Errorf("media:content URL not rewritten; output:\n%s", got)
 	}
@@ -96,7 +98,7 @@ func TestRewriteXML_UsesTypeAttributeWhenURLHasNoExtension(t *testing.T) {
 	urlMap := map[string]string{
 		"https://cdn.example.com/episode/abc123": "deadbeef",
 	}
-	got := string(feed.RewriteXML(raw, "mypod", urlMap, "http://proxy.local:8080"))
+	got := string(feed.RewriteXML(raw, "mypod", urlMap, "http://proxy.local:8080", ""))
 	if !strings.Contains(got, `url="http://proxy.local:8080/episodes/mypod/deadbeef.mp3"`) {
 		t.Errorf("expected .mp3 from type attribute fallback; output:\n%s", got)
 	}
@@ -105,7 +107,7 @@ func TestRewriteXML_UsesTypeAttributeWhenURLHasNoExtension(t *testing.T) {
 func TestRewriteXML_LeavesMissingURLsUnchanged(t *testing.T) {
 	raw := []byte(`<rss><channel><item><enclosure url="https://cdn.example.com/unknown.mp3" type="audio/mpeg" length="0"/></item></channel></rss>`)
 	urlMap := map[string]string{} // empty — no match
-	got := string(feed.RewriteXML(raw, "pod", urlMap, "http://proxy:8080"))
+	got := string(feed.RewriteXML(raw, "pod", urlMap, "http://proxy:8080", ""))
 	if !strings.Contains(got, `url="https://cdn.example.com/unknown.mp3"`) {
 		t.Errorf("original URL was unexpectedly rewritten; output:\n%s", got)
 	}
@@ -120,7 +122,7 @@ func TestRewriteXML_MultipleItems(t *testing.T) {
 		"https://cdn.example.com/ep1.mp3": "id0001",
 		"https://cdn.example.com/ep2.mp3": "id0002",
 	}
-	got := string(feed.RewriteXML(raw, "pod", urlMap, "http://proxy:8080"))
+	got := string(feed.RewriteXML(raw, "pod", urlMap, "http://proxy:8080", ""))
 	if !strings.Contains(got, "/episodes/pod/id0001") {
 		t.Errorf("ep1 URL not rewritten; output:\n%s", got)
 	}
@@ -137,7 +139,7 @@ func TestRewriteXML_RewritesAtomSelfLink(t *testing.T) {
 	urlMap := map[string]string{
 		"https://cdn.example.com/ep1.mp3": "deadbeef",
 	}
-	got := string(feed.RewriteXML(raw, "mypod", urlMap, "http://proxy.local:8080"))
+	got := string(feed.RewriteXML(raw, "mypod", urlMap, "http://proxy.local:8080", ""))
 	if !strings.Contains(got, `href="http://proxy.local:8080/feeds/mypod.rss"`) {
 		t.Errorf("atom:link self href not rewritten; output:\n%s", got)
 	}
@@ -151,9 +153,37 @@ func TestRewriteXML_RewritesAtomSelfLinkHrefBeforeRel(t *testing.T) {
 	raw := []byte(`<rss><channel>` +
 		`<atom:link href="https://upstream.example.com/feed.rss" rel="self"/>` +
 		`</channel></rss>`)
-	got := string(feed.RewriteXML(raw, "pod", nil, "http://proxy:8080"))
+	got := string(feed.RewriteXML(raw, "pod", nil, "http://proxy:8080", ""))
 	if !strings.Contains(got, `href="http://proxy:8080/feeds/pod.rss"`) {
 		t.Errorf("atom:link self href not rewritten; output:\n%s", got)
+	}
+}
+
+func TestRewriteXML_RewritesItunesImageHref(t *testing.T) {
+	raw := []byte(`<rss><channel><itunes:image href="https://img.example.com/show.jpg"/></channel></rss>`)
+	got := string(feed.RewriteXML(raw, "mypod", nil, "http://proxy:8080", "https://img.example.com/show.jpg"))
+	if !strings.Contains(got, `href="http://proxy:8080/artwork/mypod"`) {
+		t.Errorf("itunes:image href not rewritten; output:\n%s", got)
+	}
+	if strings.Contains(got, "img.example.com") {
+		t.Errorf("original artwork URL should have been removed; output:\n%s", got)
+	}
+}
+
+func TestRewriteXML_RewritesItunesImageHref_AmpersandEncoded(t *testing.T) {
+	// gofeed decodes &amp; in URLs, but raw XML bytes still contain &amp;.
+	raw := []byte(`<rss><channel><itunes:image href="https://img.example.com/art?id=1&amp;size=300"/></channel></rss>`)
+	got := string(feed.RewriteXML(raw, "mypod", nil, "http://proxy:8080", "https://img.example.com/art?id=1&size=300"))
+	if !strings.Contains(got, `href="http://proxy:8080/artwork/mypod"`) {
+		t.Errorf("itunes:image href with &amp; not rewritten; output:\n%s", got)
+	}
+}
+
+func TestRewriteXML_EmptyArtworkURL_LeavesItunesImageUnchanged(t *testing.T) {
+	raw := []byte(`<rss><channel><itunes:image href="https://img.example.com/show.jpg"/></channel></rss>`)
+	got := string(feed.RewriteXML(raw, "mypod", nil, "http://proxy:8080", ""))
+	if !strings.Contains(got, `href="https://img.example.com/show.jpg"`) {
+		t.Errorf("itunes:image href should be unchanged when artworkURL is empty; output:\n%s", got)
 	}
 }
 
@@ -261,6 +291,96 @@ func TestFetch_UnreachableServer_ReturnsError(t *testing.T) {
 	_, err := newTestFetcher(t).Fetch("pod", "http://127.0.0.1:1")
 	if err == nil {
 		t.Fatal("expected error for unreachable server, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CacheArtwork / ArtworkPath
+// ---------------------------------------------------------------------------
+
+func TestCacheArtwork_DownloadsAndSavesFile(t *testing.T) {
+	imgData := []byte("fake-jpeg-bytes")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Write(imgData)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	path, err := newTestFetcher(t).CacheArtwork(srv.URL, dir, "my-podcast")
+	if err != nil {
+		t.Fatalf("CacheArtwork: %v", err)
+	}
+	if filepath.Ext(path) != ".jpg" {
+		t.Errorf("extension: want .jpg, got %q", filepath.Ext(path))
+	}
+	got, _ := os.ReadFile(path)
+	if string(got) != string(imgData) {
+		t.Errorf("file content mismatch: got %d bytes, want %d", len(got), len(imgData))
+	}
+}
+
+func TestCacheArtwork_Idempotent_SkipsRedownload(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Write([]byte("img"))
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	f := newTestFetcher(t)
+	path1, err := f.CacheArtwork(srv.URL, dir, "my-podcast")
+	if err != nil {
+		t.Fatalf("first CacheArtwork: %v", err)
+	}
+	path2, err := f.CacheArtwork(srv.URL, dir, "my-podcast")
+	if err != nil {
+		t.Fatalf("second CacheArtwork: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("HTTP request count: want 1, got %d", calls)
+	}
+	if path1 != path2 {
+		t.Errorf("paths differ: %q vs %q", path1, path2)
+	}
+}
+
+func TestCacheArtwork_Non200_ReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "gone", http.StatusGone)
+	}))
+	defer srv.Close()
+
+	_, err := newTestFetcher(t).CacheArtwork(srv.URL, t.TempDir(), "my-podcast")
+	if err == nil {
+		t.Fatal("expected error for non-200 response, got nil")
+	}
+}
+
+func TestCacheArtwork_FallsBackToURLExtension(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Use a custom MIME type with no registered extensions so artworkExt
+		// falls through to the URL path for the extension.
+		w.Header().Set("Content-Type", "application/x-podproxy-test")
+		w.Write([]byte("img"))
+	}))
+	defer srv.Close()
+
+	path, err := newTestFetcher(t).CacheArtwork(srv.URL+"/cover.png", t.TempDir(), "my-podcast")
+	if err != nil {
+		t.Fatalf("CacheArtwork: %v", err)
+	}
+	if filepath.Ext(path) != ".png" {
+		t.Errorf("extension: want .png from URL fallback, got %q", filepath.Ext(path))
+	}
+}
+
+func TestArtworkPath_NotFound_ReturnsFalse(t *testing.T) {
+	_, ok := feed.ArtworkPath(t.TempDir(), "no-such-feed")
+	if ok {
+		t.Error("expected false for missing artwork, got true")
 	}
 }
 

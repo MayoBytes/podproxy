@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -53,6 +54,7 @@ func RegisterRoutes(mux *http.ServeMux, database *db.DB, fetcher *feed.Fetcher, 
 	}
 
 	mux.HandleFunc("GET /feeds/", h.serveFeed)
+	mux.HandleFunc("GET /artwork/{id}", h.serveArtwork)
 	mux.HandleFunc("GET /episodes/{feed_id}/{ep_id}", h.serveEpisode)
 	mux.HandleFunc("HEAD /episodes/{feed_id}/{ep_id}", h.serveEpisode)
 }
@@ -131,7 +133,20 @@ func (h *handler) serveFeed(w http.ResponseWriter, r *http.Request) {
 		urlMap[ep.OriginalURL] = ep.URLID
 	}
 
-	rewritten := feed.RewriteXML(result.RawXML, feedID, urlMap, h.cfg.Server.BaseURL)
+	// Cache artwork best-effort. Only rewrite the feed XML to point at our
+	// artwork endpoint when caching actually succeeded — otherwise the cached
+	// XML would reference /artwork/{id} which would return 404.
+	artworksDir := filepath.Join(h.cfg.Storage.CacheDir, "feeds")
+	effectiveArtworkURL := ""
+	if result.ArtworkURL != "" {
+		if _, err := h.fetcher.CacheArtwork(result.ArtworkURL, artworksDir, feedID); err != nil {
+			log.Printf("feed %s: cache artwork: %v", feedID, err)
+		} else {
+			effectiveArtworkURL = result.ArtworkURL
+		}
+	}
+
+	rewritten := feed.RewriteXML(result.RawXML, feedID, urlMap, h.cfg.Server.BaseURL, effectiveArtworkURL)
 
 	// Persist the rewritten XML so subsequent requests within the refresh window
 	// are served from disk.
@@ -144,6 +159,61 @@ func (h *handler) serveFeed(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/rss+xml; charset=utf-8")
 	w.Header().Set("Content-Length", strconv.Itoa(len(rewritten)))
 	w.Write(rewritten)
+}
+
+// artworkMIME is a fallback for extensions that mime.TypeByExtension may not
+// know about on minimal systems (e.g. Alpine Linux without /etc/mime.types).
+var artworkMIME = map[string]string{
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".png":  "image/png",
+	".webp": "image/webp",
+	".gif":  "image/gif",
+	".avif": "image/avif",
+}
+
+// serveArtwork handles GET /artwork/{id}
+// Serves the cached channel artwork image for a feed. Returns 404 if the feed
+// has no cached artwork yet (it will be populated on the next serveFeed call).
+func (h *handler) serveArtwork(w http.ResponseWriter, r *http.Request) {
+	feedID := r.PathValue("id")
+	// Reject any character outside the slugified feed ID set ([a-z0-9-]) to
+	// prevent glob injection via filepath.Glob inside ArtworkPath.
+	for _, c := range feedID {
+		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-') {
+			http.NotFound(w, r)
+			return
+		}
+	}
+
+	dir := filepath.Join(h.cfg.Storage.CacheDir, "feeds")
+	path, ok := feed.ArtworkPath(dir, feedID)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer f.Close()
+
+	// mime.TypeByExtension may return "" for types not in /etc/mime.types
+	// (e.g. .webp on Alpine). Fall back to a small known-types map.
+	ext := filepath.Ext(path)
+	ct := mime.TypeByExtension(ext)
+	if ct == "" {
+		ct = artworkMIME[ext]
+	}
+	if ct != "" {
+		w.Header().Set("Content-Type", ct)
+	}
+	var modTime time.Time
+	if info, err := f.Stat(); err == nil {
+		modTime = info.ModTime()
+	}
+	http.ServeContent(w, r, filepath.Base(path), modTime, f)
 }
 
 // serveEpisode handles GET|HEAD /episodes/{feed_id}/{ep_id}

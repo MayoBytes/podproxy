@@ -128,6 +128,16 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
     }
 
+    location /artwork/ {
+        limit_except GET HEAD {
+            deny all;
+        }
+        proxy_pass http://<your-server-ip>:<port>;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
     # Everything else (API, UI, health) is blocked entirely
     location / {
         deny all;

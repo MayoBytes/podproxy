@@ -106,6 +106,14 @@ func (h *handler) addFeed(w http.ResponseWriter, r *http.Request) {
 		log.Printf("update fetched_at: %v", err)
 	}
 
+	// Cache artwork best-effort so it's ready before the first serveFeed request.
+	if result.ArtworkURL != "" {
+		artworksDir := filepath.Join(h.cfg.Storage.CacheDir, "feeds")
+		if _, err := h.fetcher.CacheArtwork(result.ArtworkURL, artworksDir, feedID); err != nil {
+			log.Printf("api: feed %s: cache artwork: %v", feedID, err)
+		}
+	}
+
 	log.Printf("api: added feed %s (%q, %d episodes)", feedID, result.Feed.Title, len(result.Episodes))
 	proxyURL := fmt.Sprintf("%s/feeds/%s.rss", h.cfg.Server.BaseURL, feedID)
 	writeJSON(w, http.StatusCreated, map[string]string{
@@ -168,9 +176,15 @@ func (h *handler) deleteFeed(w http.ResponseWriter, r *http.Request) {
 	if err := os.RemoveAll(episodeDir); err != nil {
 		log.Printf("api: remove episode cache dir %s: %v", episodeDir, err)
 	}
-	feedXML := filepath.Join(h.cfg.Storage.CacheDir, "feeds", id+".rss")
+	feedsDir := filepath.Join(h.cfg.Storage.CacheDir, "feeds")
+	feedXML := filepath.Join(feedsDir, id+".rss")
 	if err := os.Remove(feedXML); err != nil && !errors.Is(err, os.ErrNotExist) {
 		log.Printf("api: remove feed xml cache %s: %v", feedXML, err)
+	}
+	if artworkPath, ok := feed.ArtworkPath(feedsDir, id); ok {
+		if err := os.Remove(artworkPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Printf("api: remove feed artwork %s: %v", artworkPath, err)
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -205,6 +219,19 @@ func (h *handler) refreshFeed(w http.ResponseWriter, r *http.Request) {
 		log.Printf("update fetched_at: %v", err)
 	}
 
+	// Cache artwork before writing the XML so the cached feed never references
+	// /artwork/{id} unless the file is actually present. Only rewrite the URL
+	// when caching succeeded.
+	artworksDir := filepath.Join(h.cfg.Storage.CacheDir, "feeds")
+	effectiveArtworkURL := ""
+	if result.ArtworkURL != "" {
+		if _, err := h.fetcher.CacheArtwork(result.ArtworkURL, artworksDir, id); err != nil {
+			log.Printf("api: feed %s: cache artwork: %v", id, err)
+		} else {
+			effectiveArtworkURL = result.ArtworkURL
+		}
+	}
+
 	// Regenerate the cached .rss file so the next GET /feeds/:id.rss
 	// serves URLs with the current rewrite logic (e.g. with file extensions).
 	episodes, err := h.db.ListEpisodesByFeed(id)
@@ -215,7 +242,7 @@ func (h *handler) refreshFeed(w http.ResponseWriter, r *http.Request) {
 		for _, ep := range episodes {
 			urlMap[ep.OriginalURL] = ep.URLID
 		}
-		rewritten := feed.RewriteXML(result.RawXML, id, urlMap, h.cfg.Server.BaseURL)
+		rewritten := feed.RewriteXML(result.RawXML, id, urlMap, h.cfg.Server.BaseURL, effectiveArtworkURL)
 		cachePath := filepath.Join(h.cfg.Storage.CacheDir, "feeds", id+".rss")
 		if err := os.MkdirAll(filepath.Dir(cachePath), 0755); err == nil {
 			os.WriteFile(cachePath, rewritten, 0644)

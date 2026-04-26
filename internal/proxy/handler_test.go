@@ -189,6 +189,57 @@ func TestServeFeed_UnknownFeed_Returns404(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// GET /artwork/{id}
+// ---------------------------------------------------------------------------
+
+func TestServeArtwork_NoArtwork_Returns404(t *testing.T) {
+	env := newProxyTestEnv(t)
+	env.seedFeed(t, "some-podcast")
+
+	w := env.get("/artwork/some-podcast", nil)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("want 404, got %d", w.Code)
+	}
+}
+
+func TestServeArtwork_ServesFileWithCorrectContentType(t *testing.T) {
+	env := newProxyTestEnv(t)
+	env.seedFeed(t, "art-podcast")
+
+	artworkDir := filepath.Join(env.cfg.Storage.CacheDir, "feeds")
+	if err := os.MkdirAll(artworkDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	imgData := []byte("fake-png-data")
+	if err := os.WriteFile(filepath.Join(artworkDir, "art-podcast-artwork.png"), imgData, 0644); err != nil {
+		t.Fatalf("write artwork: %v", err)
+	}
+
+	w := env.get("/artwork/art-podcast", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d; body: %s", w.Code, w.Body.String())
+	}
+	ct := w.Header().Get("Content-Type")
+	if !strings.Contains(ct, "image/png") {
+		t.Errorf("Content-Type: want image/png, got %q", ct)
+	}
+	if w.Body.String() != string(imgData) {
+		t.Errorf("body mismatch: got %q", w.Body.String())
+	}
+}
+
+func TestServeArtwork_InvalidFeedID_Returns404(t *testing.T) {
+	env := newProxyTestEnv(t)
+	// Characters outside [a-z0-9-] are rejected to prevent glob injection.
+	for _, id := range []string{"UPPER", "has.dot", "has_underscore", "has!bang"} {
+		w := env.get("/artwork/"+id, nil)
+		if w.Code != http.StatusNotFound {
+			t.Errorf("feedID %q: want 404, got %d", id, w.Code)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // GET /episodes/{feed_id}/{ep_id}
 // ---------------------------------------------------------------------------
 
