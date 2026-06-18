@@ -36,6 +36,22 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Load custom release notes
+        run: |
+          NOTES_FILE=".github/release-notes/${GITHUB_REF_NAME}.md"
+          if [ -f "$NOTES_FILE" ]; then
+            echo "Found custom release notes at $NOTES_FILE"
+            {
+              echo "RELEASE_HEADER<<__RELEASE_HEADER_EOF__"
+              cat "$NOTES_FILE"
+              echo
+              echo "__RELEASE_HEADER_EOF__"
+            } >> "$GITHUB_ENV"
+          else
+            echo "No custom release notes at $NOTES_FILE; using auto-generated changelog only"
+            echo "RELEASE_HEADER=" >> "$GITHUB_ENV"
+          fi
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:

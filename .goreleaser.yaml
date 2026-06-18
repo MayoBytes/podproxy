@@ -49,6 +49,8 @@ changelog:
       - Merge branch
 
 release:
+  header: |
+    {{ .Env.RELEASE_HEADER }}
   footer: |
     ## Docker
     ```
