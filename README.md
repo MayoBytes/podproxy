@@ -164,6 +164,7 @@ Navigate to `http://<host>:8080/ui` in a browser:
 - **Refresh Artwork** — re-download the channel thumbnail from upstream; replaces the locally cached copy.
 - **Prefetch** — queue all un-cached episodes for background download.
 - **Cache Selected / Delete Cached** — bulk mode (toggle via "Select") lets you pick individual episodes to cache or purge from disk.
+- **Migrate URL** — point an existing feed at a new upstream RSS URL (e.g., when a show changes hosts). The proxy URL your podcast app subscribes to does not change, and cached episodes whose GUIDs match the new feed remain playable. A preview step shows a GUID-overlap diff and warns if the new feed looks unrelated to the old one.
 - **Delete** — remove a feed and all its metadata.
 
 ### Podcast App Setup
@@ -179,6 +180,8 @@ DELETE /api/feeds/:id
 POST   /api/feeds/:id/refresh
 POST   /api/feeds/:id/prefetch
 POST   /api/feeds/:id/bulk-cache         { "episode_ids": [...] }
+POST   /api/feeds/:id/migrate/preview    { "new_url": "https://..." }
+POST   /api/feeds/:id/migrate            { "new_url": "https://...", "force": false }
 POST   /api/backups
 GET    /api/backups
 GET    /health

@@ -38,11 +38,16 @@ DELETE /api/feeds/:id                   Remove feed and purge cached files
 POST   /api/feeds/:id/refresh           Force RSS re-fetch (regenerates cached XML)
 POST   /api/feeds/:id/prefetch          Queue uncached episodes within age window
 POST   /api/feeds/:id/bulk-cache        Queue specific episodes by URL ID (body: {"episode_ids": [...]})
+POST   /api/feeds/:id/migrate/preview   Preview a URL migration: GUID-overlap diff + soft warnings (body: {"new_url": "..."})
+POST   /api/feeds/:id/migrate           Commit the URL migration; pass {"force": true} to override soft warnings
 POST   /api/backups                     Trigger an immediate database backup
 GET    /api/backups                     List existing backups (name, size, created_at)
 POST   /ui/feeds/:id/bulk-cache         UI: queue selected uncached episodes for download
 POST   /ui/feeds/:id/bulk-delete        UI: delete cached files for selected episodes
 POST   /ui/feeds/:id/refresh-artwork    UI: re-download channel artwork from upstream
+GET    /ui/feeds/:id/migrate            UI: render the migrate-URL form (optional ?new_url= prefill)
+POST   /ui/feeds/:id/migrate/preview    UI: render the migration preview fragment
+POST   /ui/feeds/:id/migrate            UI: commit the migration and re-render the feed list
 GET    /feeds/:id.rss                   Proxied RSS feed (used by podcast apps)
 GET    /artwork/:id                     Cached channel artwork image for a feed
 GET    /episodes/:feed_id/:ep_id        Episode audio proxy / cache server
@@ -80,6 +85,7 @@ Multi-arch image (amd64 + arm64). Volumes: `podproxy-data` (SQLite) and `podprox
 - **Bulk select mode:** UI episode list has an opt-in "Select" button that reveals checkboxes and bulk toolbar. "Cache Selected" targets `none`/`failed` episodes; "Delete Cached" targets `cached` episodes only. Both are enforced server-side — wrong-status episodes are silently skipped.
 - **Artwork caching:** Channel artwork is downloaded and stored on disk (best-effort) on feed add, refresh, and first `GET /feeds/:id.rss`. The `itunes:image href` in the rewritten RSS is pointed at `/artwork/:id` only when the file was successfully cached — so the endpoint never returns 404 for a feed that has been proxied. Artwork is not re-downloaded automatically (staleness is acceptable; the goal is offline resilience when the upstream host goes away). A dedicated `POST /ui/feeds/:id/refresh-artwork` endpoint forces a fresh download on demand: it removes the existing file then calls `CacheArtwork` with the live upstream URL. `GET /artwork/:id` sets `Cache-Control: no-cache` so browsers revalidate after a refresh. Deleted with the feed.
 - **Database backups:** `VACUUM INTO` produces a consistent, defragmented snapshot safe to take while live. `backup.Manager` handles on-demand creation, rotation (keeps newest N, deletes tail), and an optional scheduled ticker. `Stop()` uses `sync.Once` to allow safe multiple calls.
+- **Feed URL migration:** Two-step preview-then-commit flow for repointing a feed at a new upstream RSS URL. The slug-based feed `id` is frozen across migration so the subscribed proxy URL never changes; only `original_url` and `title` are updated. Episodes are keyed by `url_id = SHA256(GUID)[:8]`, so cached files survive a URL change when the new host preserves GUIDs. Preview surfaces a GUID-overlap diff and soft warnings (zero/low overlap = likely different podcast, empty feed); the commit re-runs preview server-side and refuses to bypass warnings without `force=true`. Hard errors (no-change, unreachable, parse failure, in-flight downloads) cannot be force-bypassed. Orphaned episodes (in DB but absent from new feed) are left untouched — their cached files remain reachable. Both API and HTMX UI share the same handler logic via `applyFeedFetchResult`.
 
 ## Roadmap
 
