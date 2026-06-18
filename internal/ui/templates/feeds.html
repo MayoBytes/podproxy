@@ -126,6 +126,11 @@
                         title="{{if .Feed.AutoPrefetch}}Auto-prefetch is on — click to disable{{else}}Auto-prefetch is off — click to enable{{end}}">
                   Auto-prefetch {{if .Feed.AutoPrefetch}}On{{else}}Off{{end}}
                 </button>
+                <button class="btn btn-sm btn-secondary"
+                        hx-get="/ui/feeds/{{.Feed.ID}}/migrate"
+                        hx-target="#feed-list"
+                        hx-swap="outerHTML"
+                        title="Point this feed at a new upstream RSS URL (e.g. the podcast moved hosts)">Migrate URL</button>
                 <button class="btn btn-sm btn-danger"
                         hx-delete="/ui/feeds/{{.Feed.ID}}"
                         hx-target="#feed-list"

@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,7 +39,7 @@ func init() {
 	}
 	feedsTmpl = template.Must(
 		template.New("").Funcs(funcs).ParseFS(tmplFS,
-			"templates/base.html", "templates/feeds.html"),
+			"templates/base.html", "templates/feeds.html", "templates/migrate.html"),
 	)
 	episodesTmpl = template.Must(
 		template.New("").Funcs(funcs).ParseFS(tmplFS,
@@ -57,6 +58,9 @@ func RegisterRoutes(mux *http.ServeMux, database *db.DB, fetcher *feed.Fetcher, 
 	mux.HandleFunc("POST /ui/feeds/{id}/refresh", h.refreshFeed)
 	mux.HandleFunc("POST /ui/feeds/{id}/refresh-artwork", h.refreshArtwork)
 	mux.HandleFunc("POST /ui/feeds/{id}/toggle-autoprefetch", h.toggleAutoPrefetch)
+	mux.HandleFunc("GET /ui/feeds/{id}/migrate", h.migrateForm)
+	mux.HandleFunc("POST /ui/feeds/{id}/migrate/preview", h.migratePreview)
+	mux.HandleFunc("POST /ui/feeds/{id}/migrate", h.migrateCommit)
 	mux.HandleFunc("POST /ui/feeds/{id}/bulk-cache", h.bulkCacheEpisodes)
 	mux.HandleFunc("POST /ui/feeds/{id}/bulk-delete", h.bulkDeleteEpisodes)
 	mux.HandleFunc("POST /ui/feeds/{id}/episodes/{epid}/cache", h.cacheEpisode)
@@ -282,6 +286,187 @@ func (h *uiHandler) refreshArtwork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.renderFeedList(w, fmt.Sprintf("Refreshed artwork for %q.", f.Title), false)
+}
+
+// migrateForm renders the empty migration form for a feed.
+// Handles GET /ui/feeds/{id}/migrate. The optional new_url query param lets
+// the preview's Back button restore whatever the user had typed in.
+func (h *uiHandler) migrateForm(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	f, err := h.db.GetFeed(id)
+	if errors.Is(err, db.ErrNotFound) {
+		h.renderFeedList(w, "Feed not found.", true)
+		return
+	}
+	if err != nil {
+		h.renderFeedList(w, "Database error.", true)
+		return
+	}
+	prefill := strings.TrimSpace(r.URL.Query().Get("new_url"))
+	h.renderMigrateForm(w, f, prefill, "", false)
+}
+
+// migratePreview validates a candidate URL and renders the preview fragment.
+// Handles POST /ui/feeds/{id}/migrate/preview.
+func (h *uiHandler) migratePreview(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	rawURL := r.FormValue("new_url")
+
+	f, err := h.db.GetFeed(id)
+	if errors.Is(err, db.ErrNotFound) {
+		h.renderFeedList(w, "Feed not found.", true)
+		return
+	}
+	if err != nil {
+		h.renderFeedList(w, "Database error.", true)
+		return
+	}
+
+	cleaned, err := validateMigrationURLForUI(rawURL)
+	if err != nil {
+		h.renderMigrateForm(w, f, strings.TrimSpace(rawURL), err.Error(), true)
+		return
+	}
+
+	preview, _, err := h.fetcher.PreviewMigration(h.db, id, cleaned)
+	if errors.Is(err, feed.ErrMigrationNoChange) {
+		h.renderMigrateForm(w, f, cleaned, "The new URL is the same as the current URL.", true)
+		return
+	}
+	if err != nil {
+		h.renderMigrateForm(w, f, cleaned, fmt.Sprintf("Could not fetch new feed: %v", err), true)
+		return
+	}
+	h.renderMigratePreview(w, f, preview)
+}
+
+// migrateCommit applies a previewed migration.
+// Handles POST /ui/feeds/{id}/migrate.
+func (h *uiHandler) migrateCommit(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	rawURL := r.FormValue("new_url")
+	force := r.FormValue("force") == "true"
+
+	f, err := h.db.GetFeed(id)
+	if errors.Is(err, db.ErrNotFound) {
+		h.renderFeedList(w, "Feed not found.", true)
+		return
+	}
+	if err != nil {
+		h.renderFeedList(w, "Database error.", true)
+		return
+	}
+
+	cleaned, err := validateMigrationURLForUI(rawURL)
+	if err != nil {
+		h.renderMigrateForm(w, f, strings.TrimSpace(rawURL), err.Error(), true)
+		return
+	}
+
+	if inProgress, err := h.db.HasInProgressEpisodes(id); err != nil {
+		h.renderFeedList(w, "Database error.", true)
+		return
+	} else if inProgress {
+		h.renderMigrateForm(w, f, cleaned,
+			"Cannot migrate: one or more episodes are currently being downloaded. Retry shortly.", true)
+		return
+	}
+
+	preview, result, err := h.fetcher.PreviewMigration(h.db, id, cleaned)
+	if errors.Is(err, feed.ErrMigrationNoChange) {
+		h.renderMigrateForm(w, f, cleaned, "The new URL is the same as the current URL.", true)
+		return
+	}
+	if err != nil {
+		h.renderMigrateForm(w, f, cleaned, fmt.Sprintf("Could not fetch new feed: %v", err), true)
+		return
+	}
+	if len(preview.Warnings) > 0 && !force {
+		h.renderMigratePreview(w, f, preview)
+		return
+	}
+
+	newTitle := result.Feed.Title
+	if newTitle == "" {
+		newTitle = f.Title
+	}
+	if err := h.db.UpdateFeedURLAndTitle(id, cleaned, newTitle); err != nil {
+		log.Printf("ui: update feed url/title: %v", err)
+		h.renderFeedList(w, "Failed to update feed.", true)
+		return
+	}
+
+	// Discard the old artwork on every migration — the feed identity has
+	// changed, so the cached image no longer represents this feed.
+	// applyFeedFetchResult re-caches if the new feed advertises artwork.
+	feedsDir := filepath.Join(h.cfg.Storage.CacheDir, "feeds")
+	if existing, ok := feed.ArtworkPath(feedsDir, id); ok {
+		if err := os.Remove(existing); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Printf("ui: migrate remove old artwork %s: %v", existing, err)
+		}
+	}
+
+	h.applyFeedFetchResult(id, result)
+	log.Printf("ui: migrated feed %s to %s (%d episodes, title=%q)",
+		id, cleaned, len(result.Episodes), newTitle)
+	h.renderFeedList(w,
+		fmt.Sprintf("Migrated %q to new URL (%d episode(s) seen).", newTitle, len(result.Episodes)),
+		false)
+}
+
+// applyFeedFetchResult persists a fetched feed result to the DB and on-disk
+// caches: upserts episodes, bumps last_fetched_at, caches artwork
+// (best-effort), and regenerates the cached .rss file. Shared between code
+// paths that mutate feed state (currently the migration commit handler).
+func (h *uiHandler) applyFeedFetchResult(id string, result *feed.FetchResult) {
+	for _, ep := range result.Episodes {
+		if err := h.db.UpsertEpisode(ep); err != nil {
+			log.Printf("ui: upsert episode %s: %v", ep.ID, err)
+		}
+	}
+	_ = h.db.UpdateFeedFetchedAt(id, time.Now())
+
+	feedsDir := filepath.Join(h.cfg.Storage.CacheDir, "feeds")
+	effectiveArtworkURL := ""
+	if result.ArtworkURL != "" {
+		if _, err := h.fetcher.CacheArtwork(result.ArtworkURL, feedsDir, id); err != nil {
+			log.Printf("ui: feed %s: cache artwork: %v", id, err)
+		} else {
+			effectiveArtworkURL = result.ArtworkURL
+		}
+	}
+
+	episodes, err := h.db.ListEpisodesByFeed(id)
+	if err != nil {
+		log.Printf("ui: list episodes for %s: %v", id, err)
+		return
+	}
+	urlMap := make(map[string]string, len(episodes))
+	for _, ep := range episodes {
+		urlMap[ep.OriginalURL] = ep.URLID
+	}
+	rewritten := feed.RewriteXML(result.RawXML, id, urlMap, h.cfg.Server.BaseURL, effectiveArtworkURL)
+	cachePath := filepath.Join(feedsDir, id+".rss")
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0755); err == nil {
+		os.WriteFile(cachePath, rewritten, 0644)
+	}
+}
+
+// validateMigrationURLForUI returns a cleaned URL or a user-facing error
+// message suitable for showing in the migrate form.
+func validateMigrationURLForUI(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", errors.New("URL is required.")
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "", errors.New("Please enter a valid absolute URL (e.g. https://host.example/feed.rss).")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", errors.New("URL scheme must be http or https.")
+	}
+	return raw, nil
 }
 
 func (h *uiHandler) toggleAutoPrefetch(w http.ResponseWriter, r *http.Request) {
@@ -516,6 +701,24 @@ func hasInProgress(eps []*db.Episode) bool {
 	return false
 }
 
+// renderMigrateForm writes the migrate-form fragment.
+func (h *uiHandler) renderMigrateForm(w http.ResponseWriter, f *db.Feed, newURL, message string, isError bool) {
+	data := migrateFormData{Feed: f, NewURL: newURL, Message: message, IsError: isError}
+	w.Header().Set("Content-Type", "text/html")
+	if err := feedsTmpl.ExecuteTemplate(w, "migrate-form", data); err != nil {
+		log.Printf("ui: render migrate-form fragment: %v", err)
+	}
+}
+
+// renderMigratePreview writes the migrate-preview fragment with the diff.
+func (h *uiHandler) renderMigratePreview(w http.ResponseWriter, f *db.Feed, preview *feed.MigrationPreview) {
+	data := migratePreviewData{Feed: f, Preview: preview}
+	w.Header().Set("Content-Type", "text/html")
+	if err := feedsTmpl.ExecuteTemplate(w, "migrate-preview", data); err != nil {
+		log.Printf("ui: render migrate-preview fragment: %v", err)
+	}
+}
+
 // renderFeedList writes only the #feed-list fragment (HTMX target).
 func (h *uiHandler) renderFeedList(w http.ResponseWriter, message string, isError bool) {
 	data, err := h.buildFeedsData(message)
@@ -546,6 +749,18 @@ type feedsPageData struct {
 	IsError bool
 	BaseURL string
 	Backup  backupSectionData
+}
+
+type migrateFormData struct {
+	Feed    *db.Feed
+	NewURL  string
+	Message string
+	IsError bool
+}
+
+type migratePreviewData struct {
+	Feed    *db.Feed
+	Preview *feed.MigrationPreview
 }
 
 type episodesPageData struct {

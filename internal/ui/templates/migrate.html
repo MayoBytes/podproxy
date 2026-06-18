@@ -1,0 +1,124 @@
+{{define "migrate-form"}}
+<div id="feed-list">
+  {{if .Message}}
+  <div class="alert {{if .IsError}}alert-err{{else}}alert-ok{{end}}">{{.Message}}</div>
+  {{end}}
+  <div class="card">
+    <div class="add-form">
+      <h2>Migrate Feed URL — {{.Feed.Title}}</h2>
+      <p style="color:var(--text-muted);font-size:0.88rem;margin-bottom:0.5rem">
+        Update the upstream RSS URL when the podcast moves to a new host. The
+        proxy URL your podcast app subscribes to will not change.
+      </p>
+      <p style="font-size:0.88rem">
+        <strong>Current URL:</strong> <code style="font-size:0.8rem;word-break:break-all">{{.Feed.OriginalURL}}</code>
+      </p>
+      <form hx-post="/ui/feeds/{{.Feed.ID}}/migrate/preview"
+            hx-target="#feed-list"
+            hx-swap="outerHTML"
+            hx-indicator="#migrate-preview-spinner">
+        <div class="form-row">
+          <input type="text" name="new_url"
+                 placeholder="https://newhost.example.com/feed.rss"
+                 required autocomplete="off"
+                 value="{{.NewURL}}"
+                 style="flex:1">
+          <button type="submit" class="btn btn-primary">Preview</button>
+          <a class="btn btn-secondary"
+             hx-get="/ui" hx-target="#feed-list" hx-swap="outerHTML" hx-select="#feed-list"
+             style="cursor:pointer">Cancel</a>
+          <span id="migrate-preview-spinner" class="htmx-indicator">Fetching...</span>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{{end}}
+
+{{define "migrate-preview"}}
+<div id="feed-list">
+  <div class="card">
+    <div class="add-form">
+      <h2>Migration Preview — {{.Feed.Title}}</h2>
+      <p style="color:var(--text-muted);font-size:0.88rem;margin-bottom:1rem">
+        Review the diff below. Confirm to update the feed; cached episodes whose
+        GUIDs match will remain playable. The proxy URL stays the same.
+      </p>
+
+      <table style="margin-bottom:1rem">
+        <tbody>
+          <tr>
+            <th style="text-align:left;width:40%">Current URL</th>
+            <td><code style="font-size:0.8rem;word-break:break-all">{{.Preview.CurrentURL}}</code></td>
+          </tr>
+          <tr>
+            <th style="text-align:left">New URL</th>
+            <td><code style="font-size:0.8rem;word-break:break-all">{{.Preview.NewURL}}</code></td>
+          </tr>
+          <tr>
+            <th style="text-align:left">Current Title</th>
+            <td>{{.Preview.CurrentTitle}}</td>
+          </tr>
+          <tr>
+            <th style="text-align:left">New Title</th>
+            <td>{{.Preview.NewTitle}}{{if .Preview.TitleChanged}} <span style="color:var(--text-muted);font-size:0.85rem">(will update)</span>{{end}}</td>
+          </tr>
+          <tr>
+            <th style="text-align:left">Episodes in new feed</th>
+            <td>{{.Preview.NewEpisodeCount}}</td>
+          </tr>
+          <tr>
+            <th style="text-align:left">Existing episodes (stored)</th>
+            <td>{{.Preview.ExistingEpisodes}}</td>
+          </tr>
+          <tr>
+            <th style="text-align:left">Matching GUIDs (preserved)</th>
+            <td>{{.Preview.MatchingGUIDs}}</td>
+          </tr>
+          <tr>
+            <th style="text-align:left">New GUIDs (will be added)</th>
+            <td>{{.Preview.NewGUIDs}}</td>
+          </tr>
+          <tr>
+            <th style="text-align:left">Orphaned (not in new feed)</th>
+            <td>{{.Preview.OrphanCount}} <span style="color:var(--text-muted);font-size:0.85rem">(left untouched; cached files remain playable)</span></td>
+          </tr>
+        </tbody>
+      </table>
+
+      {{if .Preview.Warnings}}
+      <div class="alert alert-err" style="margin-bottom:1rem">
+        <strong>Warnings:</strong>
+        <ul style="margin:0.5rem 0 0 1.25rem;padding:0">
+          {{range .Preview.Warnings}}<li>{{.}}</li>{{end}}
+        </ul>
+        <p style="margin-top:0.5rem;font-size:0.85rem">
+          Confirming will override these warnings.
+        </p>
+      </div>
+      {{end}}
+
+      <form hx-post="/ui/feeds/{{.Feed.ID}}/migrate"
+            hx-target="#feed-list"
+            hx-swap="outerHTML"
+            hx-indicator="#migrate-commit-spinner">
+        <input type="hidden" name="new_url" value="{{.Preview.NewURL}}">
+        {{if .Preview.Warnings}}<input type="hidden" name="force" value="true">{{end}}
+        <div class="form-row">
+          <button type="submit" class="btn {{if .Preview.Warnings}}btn-danger{{else}}btn-primary{{end}}">
+            {{if .Preview.Warnings}}Confirm Anyway{{else}}Confirm Migration{{end}}
+          </button>
+          <a class="btn btn-secondary"
+             hx-get="/ui/feeds/{{.Feed.ID}}/migrate?new_url={{.Preview.NewURL | urlquery}}"
+             hx-target="#feed-list" hx-swap="outerHTML"
+             style="cursor:pointer">Back</a>
+          <a class="btn btn-secondary"
+             hx-get="/ui" hx-target="#feed-list" hx-swap="outerHTML" hx-select="#feed-list"
+             style="cursor:pointer">Cancel</a>
+          <span id="migrate-commit-spinner" class="htmx-indicator">Migrating...</span>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{{end}}

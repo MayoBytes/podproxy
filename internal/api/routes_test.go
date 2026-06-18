@@ -60,6 +60,10 @@ func newAPITestEnv(t *testing.T) *apiTestEnv {
 			Port:    8080,
 			BaseURL: "http://proxy.local",
 		},
+		// Default to a temp cache dir so handlers that write through to the
+		// filesystem (artwork, rewritten .rss) never leak files into the
+		// source tree when individual tests forget to set CacheDir.
+		Storage:  config.StorageConfig{CacheDir: t.TempDir()},
 		Defaults: config.DefaultsConfig{RefreshIntervalMinutes: 60},
 	}
 
@@ -642,5 +646,353 @@ func TestBulkCacheFeed_SkipsCachedAndInProgress(t *testing.T) {
 	}
 	if int(resp["skipped"].(float64)) != 1 {
 		t.Errorf("skipped: want 1, got %v", resp["skipped"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/feeds/{id}/migrate (and /migrate/preview)
+// ---------------------------------------------------------------------------
+
+// migrationRSS returns RSS XML with the given title and GUID list, each item
+// carrying a single mp3 enclosure. Used to simulate a podcast host returning
+// different content from the same URL.
+func migrationRSS(title string, guids ...string) string {
+	var items strings.Builder
+	for i, g := range guids {
+		fmt.Fprintf(&items, `
+    <item>
+      <title>Episode %d</title>
+      <guid>%s</guid>
+      <enclosure url="https://cdn.example.com/%s.mp3" type="audio/mpeg" length="100"/>
+    </item>`, i+1, g, g)
+	}
+	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel>
+  <title>%s</title>
+  <link>https://example.com</link>
+  <description>Test</description>%s
+</channel></rss>`, title, items.String())
+}
+
+// newMigrationServer returns an httptest server that serves the given RSS
+// body. Used to spin up an "old host" and a "new host" within a single test.
+func newMigrationServer(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/rss+xml")
+		w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestMigrationPreview_NoChange_Returns400(t *testing.T) {
+	env := newAPITestEnv(t)
+	env.do("POST", "/api/feeds", `{"url":"`+env.rssSrv.URL+`"}`)
+
+	w := env.do("POST", "/api/feeds/my-test-podcast/migrate/preview",
+		`{"new_url":"`+env.rssSrv.URL+`"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 for no-change, got %d\nbody: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestMigrationPreview_NotFound_Returns404(t *testing.T) {
+	env := newAPITestEnv(t)
+	w := env.do("POST", "/api/feeds/no-such-feed/migrate/preview",
+		`{"new_url":"https://example.com/feed.rss"}`)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("want 404, got %d", w.Code)
+	}
+}
+
+func TestMigrationPreview_EmptyBody_Returns400(t *testing.T) {
+	env := newAPITestEnv(t)
+	env.do("POST", "/api/feeds", `{"url":"`+env.rssSrv.URL+`"}`)
+
+	w := env.do("POST", "/api/feeds/my-test-podcast/migrate/preview", `{}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d", w.Code)
+	}
+}
+
+func TestMigrationPreview_NonHTTPScheme_Returns400(t *testing.T) {
+	env := newAPITestEnv(t)
+	env.do("POST", "/api/feeds", `{"url":"`+env.rssSrv.URL+`"}`)
+
+	w := env.do("POST", "/api/feeds/my-test-podcast/migrate/preview",
+		`{"new_url":"ftp://example.com/feed.rss"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 for non-http(s) scheme, got %d\nbody: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestMigrationPreview_MalformedURL_Returns400(t *testing.T) {
+	env := newAPITestEnv(t)
+	env.do("POST", "/api/feeds", `{"url":"`+env.rssSrv.URL+`"}`)
+
+	w := env.do("POST", "/api/feeds/my-test-podcast/migrate/preview",
+		`{"new_url":"not-a-url"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 for malformed URL, got %d\nbody: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestMigrationPreview_Unreachable_Returns502(t *testing.T) {
+	env := newAPITestEnv(t)
+	env.do("POST", "/api/feeds", `{"url":"`+env.rssSrv.URL+`"}`)
+
+	w := env.do("POST", "/api/feeds/my-test-podcast/migrate/preview",
+		`{"new_url":"http://127.0.0.1:1/feed.rss"}`)
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("want 502, got %d\nbody: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestMigrationPreview_AllGUIDsMatch_NoWarnings(t *testing.T) {
+	oldSrv := newMigrationServer(t, migrationRSS("My Test Podcast", "guid-001", "guid-002"))
+	newSrv := newMigrationServer(t, migrationRSS("My Test Podcast", "guid-001", "guid-002"))
+
+	env := newAPITestEnv(t)
+	env.do("POST", "/api/feeds", `{"url":"`+oldSrv.URL+`"}`)
+
+	w := env.do("POST", "/api/feeds/my-test-podcast/migrate/preview",
+		`{"new_url":"`+newSrv.URL+`"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d\nbody: %s", w.Code, w.Body.String())
+	}
+	var p struct {
+		MatchingGUIDs int      `json:"matching_guids"`
+		NewGUIDs      int      `json:"new_guids"`
+		Warnings      []string `json:"warnings"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &p)
+	if p.MatchingGUIDs != 2 {
+		t.Errorf("matching_guids: want 2, got %d", p.MatchingGUIDs)
+	}
+	if p.NewGUIDs != 0 {
+		t.Errorf("new_guids: want 0, got %d", p.NewGUIDs)
+	}
+	if len(p.Warnings) != 0 {
+		t.Errorf("warnings: want none, got %v", p.Warnings)
+	}
+}
+
+func TestMigrationPreview_ZeroGUIDOverlap_WarnsAboutDifferentPodcast(t *testing.T) {
+	oldSrv := newMigrationServer(t, migrationRSS("My Test Podcast", "old-001", "old-002"))
+	newSrv := newMigrationServer(t, migrationRSS("My Test Podcast", "new-001", "new-002"))
+
+	env := newAPITestEnv(t)
+	env.do("POST", "/api/feeds", `{"url":"`+oldSrv.URL+`"}`)
+
+	w := env.do("POST", "/api/feeds/my-test-podcast/migrate/preview",
+		`{"new_url":"`+newSrv.URL+`"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", w.Code)
+	}
+	var p struct {
+		MatchingGUIDs int      `json:"matching_guids"`
+		Warnings      []string `json:"warnings"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &p)
+	if p.MatchingGUIDs != 0 {
+		t.Errorf("matching_guids: want 0, got %d", p.MatchingGUIDs)
+	}
+	if len(p.Warnings) == 0 || !strings.Contains(strings.Join(p.Warnings, " "), "different podcast") {
+		t.Errorf("want warning about different podcast, got %v", p.Warnings)
+	}
+}
+
+func TestMigrationCommit_NoWarnings_PreservesEpisodes(t *testing.T) {
+	oldSrv := newMigrationServer(t, migrationRSS("My Test Podcast", "guid-001", "guid-002"))
+	newSrv := newMigrationServer(t,
+		migrationRSS("My Renamed Podcast", "guid-001", "guid-002", "guid-003"))
+
+	env := newAPITestEnv(t)
+	env.do("POST", "/api/feeds", `{"url":"`+oldSrv.URL+`"}`)
+
+	// Pre-condition: two episodes, current URL is oldSrv.URL.
+	preCount, _ := env.db.CountEpisodes("my-test-podcast")
+	if preCount != 2 {
+		t.Fatalf("setup: want 2 episodes, got %d", preCount)
+	}
+
+	w := env.do("POST", "/api/feeds/my-test-podcast/migrate",
+		`{"new_url":"`+newSrv.URL+`"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d\nbody: %s", w.Code, w.Body.String())
+	}
+
+	// Feed row's original_url and title should be updated; ID unchanged.
+	f, err := env.db.GetFeed("my-test-podcast")
+	if err != nil {
+		t.Fatalf("GetFeed: %v", err)
+	}
+	if f.OriginalURL != newSrv.URL {
+		t.Errorf("original_url: want %q, got %q", newSrv.URL, f.OriginalURL)
+	}
+	if f.Title != "My Renamed Podcast" {
+		t.Errorf("title: want %q, got %q", "My Renamed Podcast", f.Title)
+	}
+
+	// Existing two episodes preserved, third upserted → total 3.
+	postCount, _ := env.db.CountEpisodes("my-test-podcast")
+	if postCount != 3 {
+		t.Errorf("episode count: want 3, got %d", postCount)
+	}
+}
+
+// emptyTitleRSS produces a valid-but-titleless RSS body. Some real-world feeds
+// return XML without a <title> element after a botched host migration.
+const emptyTitleRSS = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel>
+  <link>https://example.com</link>
+  <description>Test</description>
+  <item>
+    <title>Episode One</title>
+    <guid>guid-001</guid>
+    <enclosure url="https://cdn.example.com/ep1.mp3" type="audio/mpeg" length="100"/>
+  </item>
+</channel></rss>`
+
+func TestMigrationCommit_EmptyNewTitle_PreservesExistingTitle(t *testing.T) {
+	oldSrv := newMigrationServer(t, migrationRSS("My Test Podcast", "guid-001"))
+	newSrv := newMigrationServer(t, emptyTitleRSS)
+
+	env := newAPITestEnv(t)
+	env.do("POST", "/api/feeds", `{"url":"`+oldSrv.URL+`"}`)
+
+	// Force-migrate (the empty new feed will also raise a GUID-overlap warning).
+	w := env.do("POST", "/api/feeds/my-test-podcast/migrate",
+		`{"new_url":"`+newSrv.URL+`","force":true}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d\nbody: %s", w.Code, w.Body.String())
+	}
+
+	f, _ := env.db.GetFeed("my-test-podcast")
+	if f.Title != "My Test Podcast" {
+		t.Errorf("empty new title wiped existing title: got %q, want %q",
+			f.Title, "My Test Podcast")
+	}
+	if f.OriginalURL != newSrv.URL {
+		t.Errorf("original_url not updated: %q", f.OriginalURL)
+	}
+}
+
+func TestMigrationCommit_WarningsWithoutForce_Returns409(t *testing.T) {
+	oldSrv := newMigrationServer(t, migrationRSS("My Test Podcast", "old-001"))
+	newSrv := newMigrationServer(t, migrationRSS("My Test Podcast", "new-001"))
+
+	env := newAPITestEnv(t)
+	env.do("POST", "/api/feeds", `{"url":"`+oldSrv.URL+`"}`)
+
+	w := env.do("POST", "/api/feeds/my-test-podcast/migrate",
+		`{"new_url":"`+newSrv.URL+`"}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("want 409, got %d\nbody: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Warnings []string `json:"warnings"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if len(resp.Warnings) == 0 {
+		t.Errorf("expected warnings in 409 response, got none")
+	}
+
+	// Feed row should be untouched.
+	f, _ := env.db.GetFeed("my-test-podcast")
+	if f.OriginalURL != oldSrv.URL {
+		t.Errorf("original_url changed despite 409: %q", f.OriginalURL)
+	}
+}
+
+func TestMigrationCommit_WarningsWithForce_Succeeds(t *testing.T) {
+	oldSrv := newMigrationServer(t, migrationRSS("My Test Podcast", "old-001"))
+	newSrv := newMigrationServer(t, migrationRSS("My Test Podcast", "new-001"))
+
+	env := newAPITestEnv(t)
+	env.do("POST", "/api/feeds", `{"url":"`+oldSrv.URL+`"}`)
+
+	w := env.do("POST", "/api/feeds/my-test-podcast/migrate",
+		`{"new_url":"`+newSrv.URL+`","force":true}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d\nbody: %s", w.Code, w.Body.String())
+	}
+	f, _ := env.db.GetFeed("my-test-podcast")
+	if f.OriginalURL != newSrv.URL {
+		t.Errorf("original_url: want %q, got %q", newSrv.URL, f.OriginalURL)
+	}
+}
+
+func TestMigrationCommit_InProgressDownload_Returns409(t *testing.T) {
+	oldSrv := newMigrationServer(t, migrationRSS("My Test Podcast", "guid-001"))
+	newSrv := newMigrationServer(t, migrationRSS("My Test Podcast", "guid-001"))
+
+	env := newAPITestEnv(t)
+	env.do("POST", "/api/feeds", `{"url":"`+oldSrv.URL+`"}`)
+
+	eps, _ := env.db.ListEpisodesByFeed("my-test-podcast")
+	if len(eps) == 0 {
+		t.Fatalf("setup: no episodes")
+	}
+	tmpPath := "/tmp/x"
+	env.db.UpdateEpisodeCacheStatus(eps[0].ID, "in_progress", &tmpPath, 0, "audio/mpeg")
+
+	w := env.do("POST", "/api/feeds/my-test-podcast/migrate",
+		`{"new_url":"`+newSrv.URL+`"}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("want 409 (in-progress), got %d\nbody: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestMigrationCommit_PreservesFeedIDAndOtherColumns(t *testing.T) {
+	oldSrv := newMigrationServer(t, migrationRSS("My Test Podcast", "guid-001"))
+	newSrv := newMigrationServer(t, migrationRSS("Renamed", "guid-001"))
+
+	env := newAPITestEnv(t)
+	env.do("POST", "/api/feeds", `{"url":"`+oldSrv.URL+`"}`)
+
+	// Flip auto_prefetch on so we can confirm it isn't reset by migration.
+	if _, err := env.db.ToggleFeedAutoPrefetch("my-test-podcast"); err != nil {
+		t.Fatalf("toggle: %v", err)
+	}
+
+	w := env.do("POST", "/api/feeds/my-test-podcast/migrate",
+		`{"new_url":"`+newSrv.URL+`"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", w.Code)
+	}
+	f, _ := env.db.GetFeed("my-test-podcast")
+	if f.ID != "my-test-podcast" {
+		t.Errorf("feed ID changed: %q", f.ID)
+	}
+	if !f.AutoPrefetch {
+		t.Errorf("auto_prefetch reset by migration")
+	}
+}
+
+func TestMigrationCommit_RegeneratesRSSCacheFile(t *testing.T) {
+	oldSrv := newMigrationServer(t, migrationRSS("My Test Podcast", "guid-001"))
+	newSrv := newMigrationServer(t, migrationRSS("My Test Podcast", "guid-001"))
+
+	env := newAPITestEnv(t)
+	env.do("POST", "/api/feeds", `{"url":"`+oldSrv.URL+`"}`)
+	w := env.do("POST", "/api/feeds/my-test-podcast/migrate",
+		`{"new_url":"`+newSrv.URL+`"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d\nbody: %s", w.Code, w.Body.String())
+	}
+
+	cachePath := filepath.Join(env.cfg.Storage.CacheDir, "feeds", "my-test-podcast.rss")
+	data, err := os.ReadFile(cachePath)
+	if err != nil {
+		t.Fatalf("read cached rss: %v", err)
+	}
+	if !strings.Contains(string(data), "/episodes/my-test-podcast/") {
+		t.Errorf("cached rss does not contain rewritten proxy URLs: %s", string(data))
+	}
+	// Sanity: file is not empty and contains the original GUID.
+	if !strings.Contains(string(data), "guid-001") {
+		t.Errorf("cached rss missing expected guid: %s", string(data))
 	}
 }

@@ -67,6 +67,34 @@ func (db *DB) ListEpisodesByFeed(feedID string) ([]*Episode, error) {
 	return eps, rows.Err()
 }
 
+// CountEpisodes returns the total number of episodes recorded for feedID.
+func (db *DB) CountEpisodes(feedID string) (int, error) {
+	var n int
+	err := db.QueryRow(`SELECT COUNT(*) FROM episodes WHERE feed_id = ?`, feedID).Scan(&n)
+	return n, err
+}
+
+// CountURLIDOverlap returns how many of the supplied urlIDs are already present
+// for feedID in the episodes table. Empty input returns 0.
+func (db *DB) CountURLIDOverlap(feedID string, urlIDs []string) (int, error) {
+	if len(urlIDs) == 0 {
+		return 0, nil
+	}
+	placeholders := strings.Repeat("?,", len(urlIDs))
+	placeholders = placeholders[:len(placeholders)-1]
+	args := make([]any, 0, len(urlIDs)+1)
+	args = append(args, feedID)
+	for _, u := range urlIDs {
+		args = append(args, u)
+	}
+	var n int
+	err := db.QueryRow(
+		`SELECT COUNT(*) FROM episodes WHERE feed_id = ? AND url_id IN (`+placeholders+`)`,
+		args...,
+	).Scan(&n)
+	return n, err
+}
+
 // HasInProgressEpisodes reports whether any episode for feedID is currently
 // being written to the cache.
 func (db *DB) HasInProgressEpisodes(feedID string) (bool, error) {

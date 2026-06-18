@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,6 +35,8 @@ func RegisterRoutes(mux *http.ServeMux, database *db.DB, fetcher *feed.Fetcher, 
 	mux.HandleFunc("POST /api/feeds/{id}/refresh", h.refreshFeed)
 	mux.HandleFunc("POST /api/feeds/{id}/prefetch", h.prefetchFeed)
 	mux.HandleFunc("POST /api/feeds/{id}/bulk-cache", h.bulkCacheFeed)
+	mux.HandleFunc("POST /api/feeds/{id}/migrate/preview", h.previewMigration)
+	mux.HandleFunc("POST /api/feeds/{id}/migrate", h.commitMigration)
 
 	mux.HandleFunc("POST /api/backups", h.createBackup)
 	mux.HandleFunc("GET /api/backups", h.listBackups)
@@ -209,6 +212,19 @@ func (h *handler) refreshFeed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.applyFeedFetchResult(id, result)
+	log.Printf("api: refreshed feed %s (%d episodes)", id, len(result.Episodes))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":            id,
+		"episodes_seen": len(result.Episodes),
+	})
+}
+
+// applyFeedFetchResult persists the parsed feed result: upserts episodes,
+// bumps last_fetched_at, refreshes cached artwork (best-effort), and rewrites
+// the cached .rss file. Shared between refreshFeed and commitMigration so
+// both paths produce identical on-disk state.
+func (h *handler) applyFeedFetchResult(id string, result *feed.FetchResult) {
 	for _, ep := range result.Episodes {
 		if err := h.db.UpsertEpisode(ep); err != nil {
 			log.Printf("upsert episode %s: %v", ep.ID, err)
@@ -220,8 +236,7 @@ func (h *handler) refreshFeed(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Cache artwork before writing the XML so the cached feed never references
-	// /artwork/{id} unless the file is actually present. Only rewrite the URL
-	// when caching succeeded.
+	// /artwork/{id} unless the file is actually present.
 	artworksDir := filepath.Join(h.cfg.Storage.CacheDir, "feeds")
 	effectiveArtworkURL := ""
 	if result.ArtworkURL != "" {
@@ -232,24 +247,156 @@ func (h *handler) refreshFeed(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Regenerate the cached .rss file so the next GET /feeds/:id.rss
-	// serves URLs with the current rewrite logic (e.g. with file extensions).
 	episodes, err := h.db.ListEpisodesByFeed(id)
 	if err != nil {
 		log.Printf("list episodes for %s: %v", id, err)
-	} else {
-		urlMap := make(map[string]string, len(episodes))
-		for _, ep := range episodes {
-			urlMap[ep.OriginalURL] = ep.URLID
-		}
-		rewritten := feed.RewriteXML(result.RawXML, id, urlMap, h.cfg.Server.BaseURL, effectiveArtworkURL)
-		cachePath := filepath.Join(h.cfg.Storage.CacheDir, "feeds", id+".rss")
-		if err := os.MkdirAll(filepath.Dir(cachePath), 0755); err == nil {
-			os.WriteFile(cachePath, rewritten, 0644)
+		return
+	}
+	urlMap := make(map[string]string, len(episodes))
+	for _, ep := range episodes {
+		urlMap[ep.OriginalURL] = ep.URLID
+	}
+	rewritten := feed.RewriteXML(result.RawXML, id, urlMap, h.cfg.Server.BaseURL, effectiveArtworkURL)
+	cachePath := filepath.Join(h.cfg.Storage.CacheDir, "feeds", id+".rss")
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0755); err == nil {
+		os.WriteFile(cachePath, rewritten, 0644)
+	}
+}
+
+// validateMigrationURL trims whitespace and ensures the input parses as an
+// http(s) URL. Returns the cleaned URL or an error suitable for a 400.
+func validateMigrationURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", errors.New("URL is required")
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "", errors.New("URL must be a valid absolute http(s) URL")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", errors.New("URL scheme must be http or https")
+	}
+	return raw, nil
+}
+
+// previewMigration handles POST /api/feeds/{id}/migrate/preview.
+// Body: {"new_url": "..."}
+func (h *handler) previewMigration(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	var body struct {
+		NewURL string `json:"new_url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `body must be {"new_url": "..."}`, http.StatusBadRequest)
+		return
+	}
+	cleaned, err := validateMigrationURL(body.NewURL)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	preview, _, err := h.fetcher.PreviewMigration(h.db, id, cleaned)
+	if errors.Is(err, db.ErrNotFound) {
+		http.Error(w, "feed not found", http.StatusNotFound)
+		return
+	}
+	if errors.Is(err, feed.ErrMigrationNoChange) {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err != nil {
+		http.Error(w, fmt.Sprintf("preview failed: %v", err), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, http.StatusOK, preview)
+}
+
+// commitMigration handles POST /api/feeds/{id}/migrate.
+// Body: {"new_url": "...", "force": false}
+func (h *handler) commitMigration(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	var body struct {
+		NewURL string `json:"new_url"`
+		Force  bool   `json:"force"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `body must be {"new_url": "...", "force": bool}`, http.StatusBadRequest)
+		return
+	}
+	cleaned, err := validateMigrationURL(body.NewURL)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if inProgress, err := h.db.HasInProgressEpisodes(id); err != nil {
+		http.Error(w, "database error", http.StatusInternalServerError)
+		return
+	} else if inProgress {
+		http.Error(w, "feed has episodes currently being cached; retry shortly", http.StatusConflict)
+		return
+	}
+
+	// Look up current feed so we can fall back to the existing title if the
+	// new feed has none (empty title would otherwise wipe the user's name).
+	cur, err := h.db.GetFeed(id)
+	if errors.Is(err, db.ErrNotFound) {
+		http.Error(w, "feed not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		http.Error(w, "database error", http.StatusInternalServerError)
+		return
+	}
+
+	// Re-run preview server-side; never trust client-side warning state.
+	// The returned FetchResult is the parsed feed body; reuse it on commit
+	// rather than fetching the new URL a second time.
+	preview, result, err := h.fetcher.PreviewMigration(h.db, id, cleaned)
+	if errors.Is(err, feed.ErrMigrationNoChange) {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err != nil {
+		http.Error(w, fmt.Sprintf("preview failed: %v", err), http.StatusBadGateway)
+		return
+	}
+	if len(preview.Warnings) > 0 && !body.Force {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":    "warnings present; resubmit with force=true to override",
+			"warnings": preview.Warnings,
+			"preview":  preview,
+		})
+		return
+	}
+
+	newTitle := result.Feed.Title
+	if newTitle == "" {
+		newTitle = cur.Title
+	}
+	if err := h.db.UpdateFeedURLAndTitle(id, cleaned, newTitle); err != nil {
+		log.Printf("update feed url/title: %v", err)
+		http.Error(w, "database error", http.StatusInternalServerError)
+		return
+	}
+
+	// On migration we always discard the old artwork file so the cached
+	// image matches the new feed's identity. applyFeedFetchResult will then
+	// re-cache from result.ArtworkURL if the new feed advertises one.
+	feedsDir := filepath.Join(h.cfg.Storage.CacheDir, "feeds")
+	if existing, ok := feed.ArtworkPath(feedsDir, id); ok {
+		if err := os.Remove(existing); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Printf("api: migrate remove old artwork %s: %v", existing, err)
 		}
 	}
 
-	log.Printf("api: refreshed feed %s (%d episodes)", id, len(result.Episodes))
+	h.applyFeedFetchResult(id, result)
+	log.Printf("api: migrated feed %s to %s (%d episodes, title=%q)",
+		id, cleaned, len(result.Episodes), newTitle)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":            id,
 		"episodes_seen": len(result.Episodes),

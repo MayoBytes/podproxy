@@ -60,6 +60,24 @@ func (db *DB) UpdateFeedFetchedAt(id string, t time.Time) error {
 	return err
 }
 
+// UpdateFeedURLAndTitle updates a feed's upstream URL and display title.
+// The feed's ID (slug) is intentionally NOT changed — podcast app subscriptions
+// reference the slug and must continue to work across migrations.
+func (db *DB) UpdateFeedURLAndTitle(id, newURL, newTitle string) error {
+	res, err := db.Exec(
+		`UPDATE feeds SET original_url = ?, title = ? WHERE id = ?`,
+		newURL, newTitle, id,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("feed %w", ErrNotFound)
+	}
+	return nil
+}
+
 func (db *DB) ToggleFeedAutoPrefetch(id string) (bool, error) {
 	res, err := db.Exec(`UPDATE feeds SET auto_prefetch = NOT auto_prefetch WHERE id = ?`, id)
 	if err != nil {

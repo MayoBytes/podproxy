@@ -103,7 +103,7 @@ func itemToEpisode(feedID string, item *gofeed.Item) *db.Episode {
 		return nil
 	}
 
-	urlID := episodeURLID(guid)
+	urlID := EpisodeURLID(guid)
 	dbID := feedID + "/" + guid
 
 	ep := &db.Episode{
@@ -153,8 +153,10 @@ func parseDuration(s string) int {
 	return 0
 }
 
-// episodeURLID returns a short, URL-safe identifier derived from the RSS GUID.
-func episodeURLID(guid string) string {
+// EpisodeURLID returns a short, URL-safe identifier derived from the RSS GUID.
+// Exported so other packages (e.g. migration preview) can compute the same
+// stable per-episode key without re-parsing the feed.
+func EpisodeURLID(guid string) string {
 	h := sha256.Sum256([]byte(guid))
 	return hex.EncodeToString(h[:8])
 }
